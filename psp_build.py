@@ -217,6 +217,13 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # PSP_DRAWLIST=1: the draw list box (docs/box_draw_list.md), off by default
 # until it is cut over; under it the keep word "drawlist" turns it on
 DRAWLIST = os.environ.get("PSP_DRAWLIST", "") == "1"
+# PSP_DRAW2=1: the far kind's sub-lists (FARCALL, docs/box_draw_main.md
+# section 4.2a; psp/src/box_draw2.c): a far model's GE words written by the
+# main CPU, one CALL record for the replay. Off by default until it is priced;
+# passed to psp_ge.c's own compile
+DRAW2 = os.environ.get("PSP_DRAW2", "") == "1"
+if DRAW2:
+    PSP_FILES.append("box_draw2")
 # PSP_PADPATH=1: the pad path (docs/pad_path.md; psp_pad.c's second half, its
 # reader in players.c, keep words pathrec, pathlog, padwatch). A bench tool:
 # its reader is an engine function a tick's profile has no counts for and its
@@ -925,6 +932,7 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_DRAWLIST=1"] if DRAWLIST and src.endswith("psp_ge.c") else []) + (
+               ["-DPSP_DRAW2=1"] if DRAW2 and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_PADPATH=1"] if PADPATH else []) + (
                ["-DPSP_FRAMEPIC=1"] if FRAMEPIC else []) + (

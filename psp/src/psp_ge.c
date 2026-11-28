@@ -204,6 +204,12 @@ saves is the most that moving this file's work to the Media Engine could save
 (an upper bound: the ME's version keeps the GE's reading) */
 #include "../include/psp_bench.h" /* the plain-C units have no -I for psp/include (psp_build.py) */
 #include "../include/psp_seethrough.h" /* build 116: a see-through part's fade, packed with its blend */
+#ifdef PSP_DRAW2
+#include "../include/box_draw2.h" /* FARCALL: the far kind's sub-lists, written by the main CPU */
+#ifdef PSP_DRAWLIST
+#error "PSP_DRAW2 makes ge_eye as the frame without drawlist's held origin: not built with PSP_DRAWLIST"
+#endif
+#endif
 #define GE_BENCH_SKIP(...) do { if (psp_bench_skip & PSP_SKIP_GE) return __VA_ARGS__; } while (0)
 
 /* ---------- build 112: the GE layer's calls deferred (keep word "gedefer")
@@ -255,6 +261,9 @@ enum
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
 	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED, DEFER_MODEL_REFLECTION, DEFER_LIGHT_GEL, DEFER_LEVEL_GLOW,
 	DEFER_DRAW_FAR,
+#ifdef PSP_DRAW2
+	DEFER_CALL_FAR, /* FARCALL: a far model's sub-list, written by the main CPU */
+#endif
 	DEFER_FRAME_END, DEFER_WINDOW_BEGIN /* last: REPLAY_SERVED follows it */
 };
 typedef union
@@ -1223,6 +1232,25 @@ static int defer_draw_far(const void *block, unsigned int mask_low, unsigned int
 	return 1;
 }
 
+#ifdef PSP_DRAW2
+/* FARCALL: the sub-list and its bytes, all the replay needs of a far model */
+static void psp_ge_call_far(const unsigned int *sub, unsigned int bytes);
+/* the model's node matrices as the main CPU recorded its begin (the engine's
+own, still current while render_model draws it): model_nodes is the
+replay's, unset on this side while the frame is recorded */
+static PSP_MAIN_SIDE const float *draw2_nodes = NULL;
+static PSP_MAIN_SIDE int draw2_node_count = 0;
+
+static int defer_call_far(const unsigned int *sub, unsigned int bytes)
+{
+	defer_word *at = defer_take(DEFER_CALL_FAR, 2);
+
+	at[0].p = sub;
+	at[1].u = bytes;
+	return 1;
+}
+#endif
+
 static int defer_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
@@ -1607,6 +1635,9 @@ static const char *const replay_kind_names[REPLAY_KINDS] =
 	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_MODEL_REFLECTION] = "model reflection",
 	[DEFER_LIGHT_GEL] = "light gel faces",
 	[DEFER_LEVEL_GLOW] = "level glow", [DEFER_DRAW_FAR] = "far level",
+#ifdef PSP_DRAW2
+	[DEFER_CALL_FAR] = "far level's call",
+#endif
 	[DEFER_FRAME_END] = "frame end (list's part)",
 	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
 	[REPLAY_FLUSH] = "see-through flush (inside a record)",
@@ -1734,6 +1765,11 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 				psp_ge_draw_far(w[0].p, w[1].u, w[2].u, tints, w[7].p);
 			}
 			break;
+#ifdef PSP_DRAW2
+		case DEFER_CALL_FAR:
+			psp_ge_call_far((const unsigned int *)w[0].p, w[1].u);
+			break;
+#endif
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
 				w[6].u, w[7].u, w[8].f, w[9].f, w[10].i);
@@ -6884,6 +6920,11 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	rso_window();
 	if (!PSP_ME_WORK())
 		main_view_begin(position, forward, up, vertical_field_of_view);
+#ifdef PSP_DRAW2
+	/* FARCALL: the frame's set of far sub-lists, at its first window */
+	if (!window_main_done && !PSP_ME_WORK())
+		draw2_frame_begin();
+#endif
 	/* B41: a sleep asked is carried out at a frame's first window, before
 	anything of the frame reaches the GE layer (psp_sleep.c) */
 	if (!window_main_done && !PSP_ME_WORK())
@@ -11905,6 +11946,15 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	may also hold) */
 	if (!model_switch.read && !psp_on_me())
 		model_switches();
+#ifdef PSP_DRAW2
+	/* the engine's call, not a replay's (a drain on the main CPU replays
+	begins between this one and its far draw) */
+	if (!psp_on_me() && !defer_replaying)
+	{
+		draw2_nodes = node_matrices;
+		draw2_node_count = node_matrix_count;
+	}
+#endif
 	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
 		return;
@@ -17943,6 +17993,9 @@ static void far_report(void)
 			far_drawn, far_vertices, (double)far_drawn / 300.0, (double)far_vertices / 300.0,
 			(double)far_small / 300.0, (double)far_small_vertices / 300.0, (double)far_sprites / 300.0);
 	far_drawn = far_vertices = far_small = far_small_vertices = far_sprites = 0;
+#ifdef PSP_DRAW2
+	draw2_report();
+#endif
 }
 
 static void far_sprite(const unsigned char *at);
@@ -18055,6 +18108,166 @@ void psp_ge_draw_far(const void *block, unsigned int mask_low, unsigned int mask
 	sceGuColorMaterial(0);
 	model_lighting(0);
 }
+
+#ifdef PSP_DRAW2
+/* FARCALL (docs/box_draw_main.md section 4.2a), the replay's side: what
+psp_ge_draw_far sends around its groups, and between them a CALL to the
+groups' words the main CPU wrote. The lighting stays here, from the replayed
+begin and with the lit memo, so every memo the replay keeps stays true; what
+the sub-list changes behind them is the material (no memo), the GE's model
+matrix (pspgum's, marked to be sent again) and the bone matrices (sent by
+every skinned draw) */
+static void psp_ge_call_far(const unsigned int *sub, unsigned int bytes)
+{
+	ScePspFMatrix4 m;
+
+	GE_DEFER(defer_call_far(sub, bytes));
+	GE_BENCH_SKIP();
+	(void)bytes;
+	if (!frame_open || !sub || list_full() || ge_draw_skipped())
+		return;
+	sceGumMatrixMode(GU_MODEL);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDisable(GU_CULL_FACE);
+	model_lighting(1);
+	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE);
+	/* a view or projection pspgum still holds unsent goes first, as the old
+	path's first draw sent it */
+	sceGumUpdateMatrix();
+	/* BASE and CALL, as the bone sub-lists' (pspgu's sceGuCallList without
+	its stall update) */
+	sceGuSendCommandi(0x10, ((unsigned int)sub >> 8) & 0xF0000);
+	sceGuSendCommandi(0x0A, (unsigned int)sub & 0xFFFFFF);
+	/* the GE's model matrix is the sub-list's last: pspgum's own, loaded
+	again, is sent at the next draw that takes it */
+	sceGumStoreMatrix(&m);
+	sceGumLoadMatrix(&m);
+	sceGuColorMaterial(0);
+	model_lighting(0);
+}
+
+/* FARCALL, the main CPU's side: psp_ge_draw_far's groups as GE words in this
+frame's set, from the begin's node matrices (draw2_nodes) and the eye the
+replay's window begin makes ge_eye from (main_view_eye; level_origin is the
+main CPU's). 0 when there's no room or no nodes: the caller records the old
+DEFER_DRAW_FAR then */
+static int draw2_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints)
+{
+	const unsigned char *at;
+	unsigned int group, words = 0;
+	struct draw2_sub sub;
+	float eye[3];
+	int k;
+
+	if (!block || !draw2_nodes || draw2_node_count <= 0)
+		return 0;
+	/* the room: a shown group's words at most (colour material and material
+	4, its matrices 13 each, the draw 6), and the RET */
+	for (at = block, group = 0; at && group < 64; group++)
+	{
+		const unsigned int *head = (const unsigned int *)at;
+		int shown = group < 32 ? (mask_low >> group) & 1 : (mask_high >> (group - 32)) & 1;
+
+		if (shown && head[2] && head[4] >= 3)
+			words += 4 + 6 + 13 * ((head[1] & 0x20000u) ? (head[11] > 8 ? 8 : head[11]) + 1 : 1);
+		at = head[14] ? at + head[14] : NULL;
+	}
+	if (!words || !draw2_open(&sub, words + 1))
+		return 0;
+	for (k = 0; k < 3; k++)
+		eye[k] = !level_exact ? main_view_eye[k] :
+			level_local ? level_origin[k] + ge_matrix_float(main_view_eye[k] - level_origin[k]) :
+			ge_matrix_float(main_view_eye[k]);
+	for (at = block, group = 0; at && group < 64; group++)
+	{
+		const unsigned int *head = (const unsigned int *)at;
+		const float *box = (const float *)(head + 5);
+		int shown = group < 32 ? (mask_low >> group) & 1 : (mask_high >> (group - 32)) & 1;
+
+		if (shown && head[2] && head[4] >= 3)
+		{
+			unsigned int source = (head[15] >> 16) & 7, node, skinned = head[1] & 0x20000u;
+			const unsigned char *vertices = at + (skinned ? 80 : 64);
+			const void *drawn;
+			ScePspFMatrix4 m;
+			ScePspFVector3 centre, half;
+			const float *n;
+
+			if (source >= 1 && source <= 4)
+			{
+				unsigned int mean = head[12], tint = tints[source - 1], colour = 0xFF000000u, c;
+
+				for (c = 0; c < 24; c += 8)
+					colour |= ((((mean >> c) & 0xFF) * ((tint >> c) & 0xFF) + 127) / 255) << c;
+				sub.at = draw2_color_material(sub.at, 0);
+				sub.at = draw2_material(sub.at, colour);
+			}
+			else
+				sub.at = draw2_color_material(sub.at, GU_AMBIENT | GU_DIFFUSE);
+			centre.x = box[0];
+			centre.y = box[1];
+			centre.z = box[2];
+			half.x = box[3] * (32768.0f / 32767.0f);
+			half.y = box[4] * (32768.0f / 32767.0f);
+			half.z = box[5] * (32768.0f / 32767.0f);
+			if (skinned)
+			{
+				const unsigned char *bones = at + 64;
+				unsigned int count = head[11] > 8 ? 8 : head[11], b;
+
+				for (b = 0; b < count; b++)
+				{
+					ScePspFMatrix4 bone;
+
+					node = bones[b] < (unsigned int)draw2_node_count ? bones[b] : 0;
+					n = draw2_nodes + 13 * node;
+					/* halo_matrix's, from the eye */
+					m.x.x = n[0] * n[1]; m.x.y = n[0] * n[2]; m.x.z = n[0] * n[3];
+					m.y.x = n[0] * n[4]; m.y.y = n[0] * n[5]; m.y.z = n[0] * n[6];
+					m.z.x = n[0] * n[7]; m.z.y = n[0] * n[8]; m.z.z = n[0] * n[9];
+					m.w.x = n[10] - eye[0]; m.w.y = n[11] - eye[1]; m.w.z = n[12] - eye[2];
+					bone.x.x = m.x.x * half.x; bone.x.y = m.x.y * half.x; bone.x.z = m.x.z * half.x; bone.x.w = 0.0f;
+					bone.y.x = m.y.x * half.y; bone.y.y = m.y.y * half.y; bone.y.z = m.y.z * half.y; bone.y.w = 0.0f;
+					bone.z.x = m.z.x * half.z; bone.z.y = m.z.y * half.z; bone.z.z = m.z.z * half.z; bone.z.w = 0.0f;
+					bone.w.x = m.w.x + centre.x * m.x.x + centre.y * m.y.x + centre.z * m.z.x;
+					bone.w.y = m.w.y + centre.x * m.x.y + centre.y * m.y.y + centre.z * m.z.y;
+					bone.w.z = m.w.z + centre.x * m.x.z + centre.y * m.y.z + centre.z * m.z.z;
+					bone.w.w = 1.0f;
+					sub.at = draw2_matrix(sub.at, 0x2Au, b * 12, 0x2Bu, (const float *)&bone);
+				}
+				gumLoadIdentity(&m);
+				sub.at = draw2_matrix(sub.at, 0x3Au, 0, 0x3Bu, (const float *)&m);
+				drawn = vm_on > 0 ? vm_redirect(vertices, (int)head[4]) : vertices;
+				sub.at = draw2_draw(sub.at, head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
+					GU_WEIGHTS(count ? count : 1) | GU_WEIGHT_8BIT | GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT |
+					GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4], vertices + head[3] * head[2], drawn);
+			}
+			else
+			{
+				node = head[11] < (unsigned int)draw2_node_count ? head[11] : 0;
+				n = draw2_nodes + 13 * node;
+				m.x.x = n[0] * n[1]; m.x.y = n[0] * n[2]; m.x.z = n[0] * n[3]; m.x.w = 0.0f;
+				m.y.x = n[0] * n[4]; m.y.y = n[0] * n[5]; m.y.z = n[0] * n[6]; m.y.w = 0.0f;
+				m.z.x = n[0] * n[7]; m.z.y = n[0] * n[8]; m.z.z = n[0] * n[9]; m.z.w = 0.0f;
+				m.w.x = n[10] - eye[0]; m.w.y = n[11] - eye[1]; m.w.z = n[12] - eye[2]; m.w.w = 1.0f;
+				/* pspgum's own (sceGumTranslate and sceGumScale make these
+				calls on its current matrix), so the floats are the old path's */
+				gumTranslate(&m, &centre);
+				gumScale(&m, &half);
+				sub.at = draw2_matrix(sub.at, 0x3Au, 0, 0x3Bu, (const float *)&m);
+				drawn = vm_on > 0 ? vm_redirect(vertices, (int)head[4]) : vertices;
+				sub.at = draw2_draw(sub.at, head[13] ? GU_TRIANGLES : GU_TRIANGLE_STRIP,
+					GU_COLOR_5650 | GU_NORMAL_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D, (int)head[4],
+					vertices + head[3] * head[2], drawn);
+			}
+		}
+		at = head[14] ? at + head[14] : NULL;
+	}
+	psp_ge_call_far(sub.start, draw2_close(&sub));
+	return 1;
+}
+#endif
 
 /* render_model's (FIXES_FARLEVEL), on the main CPU after the model's begin
 (on by default; farlevelold turns it off, farlevelN sets the size):
@@ -18179,6 +18392,13 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 			if (sprite_pixels > 0 && pixels < (float)sprite_pixels)
 				psp_rso_volatile |= 8;
 		}
+#ifdef PSP_DRAW2
+		/* FARCALL: the groups' words written here, one CALL record. The old
+		record for a sprite, for a model rso is keeping (a kept CALL would name
+		a set three frames gone; rso's capture refuses the kind), or with no
+		room in the frame's set */
+		if (sprite || psp_rso_capturing || !draw2_far(block, mask[0], mask[1], tints))
+#endif
 		psp_ge_draw_far(block, mask[0], mask[1], tints, sprite);
 		if (sprite)
 			far_sprites++;
