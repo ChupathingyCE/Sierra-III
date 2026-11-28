@@ -2337,6 +2337,115 @@ STEP_LABELS = {
 if os.environ.get("PSP_TICK_STEPS", "") == "1":
     STEP_LABELS.update(STEP_LABELS_TICK)
 
+# A step placed after an un-braced if, else, for, while or do becomes its lone
+# body, and the statement it guarded runs every time (the shadow's
+# render_model under the GE, the lab's findings/case_dmf_2026-11-28.md).
+# step_labels refuses such a place; the lab's toolbox/stepsplit.py applies the
+# same rule to a whole tree
+STEP_AT_LINE_START = re.compile(r'^PSP_STEP\("(?:[^"\\]|\\.)*"\);')
+STEP_AFTER_GUARD = re.compile(r'(\)|\belse|\bdo|\breturn|=)\s*PSP_STEP\("(?:[^"\\]|\\.)*"\);')
+
+def strip_comments(text):
+    """comments blanked, newlines kept; strings left alone"""
+    pattern = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|/\*.*?\*/|//[^\n]*', re.S)
+    return pattern.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else re.sub(r"[^\n]", " ", m.group(0)), text)
+
+def directive(line):
+    m = re.match(r"\s*#\s*(\w+)", line)
+    return m.group(1) if m else None
+
+def conditional(lines, endif):
+    """the #if of the conditional closed at endif, and its #else/#elif lines"""
+    depth, marks, i = 0, [], endif - 1
+    while i >= 0:
+        d = directive(lines[i])
+        if d == "endif":
+            depth += 1
+        elif d in ("if", "ifdef", "ifndef"):
+            if depth == 0:
+                return i, marks[::-1]
+            depth -= 1
+        elif d in ("else", "elif") and depth == 0:
+            marks.append(i)
+        i -= 1
+    return -1, marks[::-1]
+
+def lines_before(lines, i, floor=-1):
+    """the code lines that can come just before line i (one per preprocessor branch)"""
+    j = i - 1
+    while j > floor:
+        s = lines[j].strip()
+        d = directive(lines[j])
+        if d == "endif":
+            top, marks = conditional(lines, j)
+            found = set()
+            edges = [top] + marks + [j]
+            for a, b in zip(edges, edges[1:]):
+                inner = lines_before(lines, b, a)
+                found |= inner if inner else lines_before(lines, top, floor)
+            if not any(directive(lines[m]) == "else" for m in marks):
+                found |= lines_before(lines, top, floor)
+            return found
+        if d in ("else", "elif"):
+            # skip the earlier branches of this conditional
+            depth, k = 0, j - 1
+            while k >= 0:
+                e = directive(lines[k])
+                if e == "endif":
+                    depth += 1
+                elif e in ("if", "ifdef", "ifndef"):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                k -= 1
+            j = k - 1
+            continue
+        if not s or d or STEP_AT_LINE_START.match(s):
+            j -= 1
+            continue
+        return {j}
+    return set()
+
+def unbraced_guard(lines, j):
+    """the guard's first line if the code line j ends an un-braced guard, else None"""
+    s = lines[j].rstrip()
+    if re.search(r"(^|[\s}])(else|do)$", s):
+        return j
+    if not s.endswith(")"):
+        return None
+    depth, k, pos = 0, j, len(s) - 1
+    while k >= 0:
+        t = lines[k].rstrip()
+        if k != j:
+            pos = len(t) - 1
+        while pos >= 0:
+            if t[pos] == ")":
+                depth += 1
+            elif t[pos] == "(":
+                depth -= 1
+                if depth == 0:
+                    head = t[:pos].rstrip()
+                    return k if re.search(r"(^|[\s}])(if|for|while)$", head) else None
+            pos -= 1
+        k -= 1
+    return None
+
+def check_step_places(rel, text, labels):
+    lines = strip_comments(text).split("\n")
+    steps = tuple('PSP_STEP("%s");' % label for label in labels)
+    for i, line in enumerate(lines):
+        if directive(line) or not any(step in line for step in steps):
+            continue
+        s = line.strip()
+        if STEP_AT_LINE_START.match(s):
+            guards = [unbraced_guard(lines, j) for j in sorted(lines_before(lines, i))]
+            guards = [g for g in guards if g is not None]
+        else:
+            guards = [i] if STEP_AFTER_GUARD.search(s) else []
+        if guards:
+            check_fail("psp_fixups: step labels: %s:%d: %s would take the body of the un-braced guard at line %d (%s): brace it"
+                       % (rel, i + 1, s, guards[0] + 1, lines[guards[0]].strip()))
+
 def step_labels(tree):
     changed = 0
     for rel, places in STEP_LABELS.items():
@@ -2367,6 +2476,7 @@ def step_labels(tree):
             text = out
         if "void psp_step(" not in text:
             text = declare_step(text)
+        check_step_places(rel, text, [label for place, label, where in places])
         open(path, "w", errors="surrogateescape").write(text + "\n/* PSP_STEP_LABELS */\n")
         changed += 1
     return changed
@@ -5585,9 +5695,15 @@ FIXES_23["source/render/render_objects.c#shadows"] = [
  """#ifdef HALO_PSP
 					if (!psp_ge_active())
 #endif
+					{ /* braced: STEP_LABELS puts a step before the call */
 					render_model(
 						definition->object.model.index,
 						level_of_detail_pixels * 0.3f,"""),
+("""FLAG(_render_model_shadow_bit));
+""",
+ """FLAG(_render_model_shadow_bit));
+					}
+"""),
 ]
 FIXES_23["source/rasterizer/rasterizer.c"].append(
 ("""	return _rasterizer_environment_shadow_begin(
