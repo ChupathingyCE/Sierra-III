@@ -87,3 +87,37 @@ _The builder, 2026-11-27 08:12. The branch is `builder/spprofout2`, off the tock
 **What does move.** One 4-byte static (`profile_tables_ready`) and four new log strings shift the unplaced data and read-only data after them in `psp_platform.o` and `psp_scratch.o`. Unplaced code after the two objects' grown functions shifts too.
 
 **The piece list** (done-when 1) comes from the start-up log of task 2's emulator batch, both sides. Default: the BSP's nodes at 00010000 as in the parent, the cut corners from the heap as in the parent, then "scratchpad: N bytes held at …", and no profiler line. `profscratch`: the parent's lines, the profiler's two pieces at the parent's addresses.
+
+## 2. The frame at one tick a frame, slot by slot (sp-plan (2), paper) [D at cc828579]
+
+_The builder, 2026-11-28 04:2x. The slots are the five pages' "Scratchpad slot" sections (posing, biped motion, collision, draw list, world store) and the tick schedule's table. The tick's passes are tc-tick's parked design, not code. Slot sizes are worked from struct fields, not a measured sizeof. Nothing is built or claimed as a gain._
+
+**What stays resident, default build** [D]:
+
+- **Nothing is taken before the level BSP's nodes.** `ge_initialize` calls `psp_scratch_bsp_take`, then `cut_take`, then `psp_profile_tables_take` (`psp/src/psp_ge.c:5135-5138`). The only earlier askers are the two execution probes (`psp_scratch.c:266,330`, from `psp_vfpu.c:675-676`), which return unless "spadexec" or "spadexec2" is set.
+- **Nodes: 9,728 B** (304 x 32): (16,384 − 6,656 − 0), rounded down to whole 32 B slots, with nothing lost (`psp_scratch.c:377,392`).
+- **Held: 6,656 B**, untaken (`psp_scratch.c:365,411-423`). The cut corners' 8,448 B don't fit and go to the heap (`psp_scratch.c:56,65`; `psp_ge.c:14357`).
+- **Spare: 0 B.** 9,728 + 6,656 = 16,384. The emulator's start-up line agrees [E]: "6656 bytes held at 00012600 … 9728 of 16384 used" (run 46015136001). The "~0.9 KB spare" in QMARK and the brief is an older layout's; it reads like 16 − the "15.1 of 16 KB" of `psp_scratch.c:18` [U], and that layout's own sizes (8,448 + 6,656) left 1,280 B.
+
+**The frame, in order.** One main-CPU pass runs at a time. Each row is nodes + slot + what's left of the held room = 16,384. The ME has no scratchpad: 0 B in every row, its sweep beside P1 to J and its replay beside the drawing included (`psp_scratch.c:3-4`).
+
+| # | Main-CPU instant | Slot's page | Nodes | Slot | Held, free | **In use, of 16,384** |
+|---|---|---|---:|---:|---:|---:|
+| 1 | tick: H0 to H4 (fence, AI, players, activation, copy and post) | tick; world store (hand-over: none) | 9,728 | 0 | 6,656 | **9,728** |
+| 2 | P1 the walk, P2 the units part | tick | 9,728 | 0 | 6,656 | **9,728** |
+| 3 | P2 I, the bipeds' intent | biped motion | 9,728 | ~800 | ~5,856 | **~10,528** |
+| 4 | posing's pass, parallel phase [U: its place; §12.3's plan names no such pass] | posing, at 64 nodes | 9,728 | 2,292 | 4,364 | **12,020** |
+| 5 | J the join | tick | 9,728 | 0 | 6,656 | **9,728** |
+| 6 | G's fallback, only for late or not-held bipeds | collision | 9,728 | 5,400 | 1,256 | **15,128** |
+| 7 | S1 M, the bipeds' solve | biped motion | 9,728 | ~800 | ~5,856 | **~10,528** |
+| 8 | S2 after M | tick | 9,728 | 0 | 6,656 | **9,728** |
+| 9 | drawing: the frame-list build | draw list | 9,728 | 4,448 | 2,208 | **14,176** |
+| 10 | the rest of the drawing | none | 9,728 | 0 | 6,656 | **9,728** |
+
+**No instant is over 16,384 B.** The most is row 6, 15,128. This holds only while:
+
+- one slot is loaded at a time. Row 6's slot with any other would be over the held room by itself (5,400 + 2,292 > 6,656);
+- "profscratch" is off. With it the profiler takes the held 6,656 B and no slot fits;
+- the allocator learns to share the held room in time. Today it hands out fixed pieces at start-up (`psp_scratch.c:15-17`).
+
+Queries from inside object updates have no pass and no slot (box_collision.md).
