@@ -132,6 +132,19 @@ The ME box review of the tock's sweep (the lab's `coord/reviews/box-sweepme_cd1c
 - **D6/Q2, noted** [D]: the record's leaf copy loops `i < leaf_count && i <= PSP_SWEEPME_LEAVES`, one past the record's 64 leaves when a walk finds more. The read stays inside the walk's own 256-entry list and the record is then refused (`SWEEPME_LEAVES`), so nothing plays differently; the bound should be `<`, checked against `leaf_count` first, when the record is next touched.
 - **D7, noted** [D]: the record function runs under the ring's 4 KB job-stack allowance (`RING_JOB_STACK_BYTES`), and the sentinel is read at the next ring job, not at the batch's end. A deeper path through `box_sweep` (the recursion in `sphere3d`) could pass it and be reported as `RING_STACK` late. No run has reached it; the stack's depth on the PSP is the evidence to get when the record grows.
 
+## Scratchpad slot
+
+_sp-plan (1) (Sheepdog01 2026-11-27 02:1x: "Each box's page states its scratchpad budget, the way it states heap and eDRAM"). The builder, 2026-11-28 04:2x, on paper; file:line at cc828579; sized on this page's design (per-query state, §5 A) with the box's v0 structures. Nothing is built or claimed as a gain; the PSP prices it, whole frame._
+
+- **Resident, counted apart** [D]: SCRATCHBSP's level nodes, **304 x 32 B = 9,728 B**: the 16,384 B (`psp/src/psp_scratch.c:42`) less the 6,656 held (`psp_scratch.c:365`, the sum at `:392`), a slot 32 B (`psp/include/psp_scratchbsp.h:21-27`). Taken at renderer start (`psp/src/psp_ge.c:5135`), filled at each BSP set (`psp_scratch.c:441`), there through every pass. Not part of the query's slot.
+- **Pass:** a run of the main CPU's queries (biped motion's gather, `box_biped_motion.md` §3b). Other askers query from inside updates and have no pass to load a slot. The ME's queries have none: it can't see the scratchpad.
+- **Loads / drops:** taken at the pass's start, nothing copied in; reset by each query; dropped at the pass's end.
+- **Holds, one query at a time** [D]: the sphere walk's result, `struct box_collbsp_sphere_result` (`psp/src/box_collbsp.h:76-97`; 256 a list, `:17`): the surface, edge, vertex and leaf lists 4,112 B, how each was first met 1,280 B, two words 8 B.
+- **Slot: 5,400 B** (worked from the fields, not a measured sizeof) [D]. It fits the 6,656 B held.
+- **Left in RAM:** the feature list, `struct box_sweep_features`, **44,044 B** (`psp/src/box_sweep.h:23,60-78`), more than the whole 16 KB; the level's nodes below SCRATCHBSP's, surfaces, edges and vertices (the tags).
+- **Open for the ranking:** a query fills only a prefix of each list, so the bytes touched are fewer (no count here). No misses-per-byte count is given here.
+- **What must change:** the allocator hands out fixed pieces at start-up, never shared in time (`psp_scratch.c:15-17`).
+
 ## Open
 
 - **A query's feature list isn't cleared whole** [D, the fixed-up tree at Sierra-III ce750542]: `collision_features_new` zeroes only the counts (`memset(features->count, 0, sizeof(features->count))`, `source/physics/collision_features.c:29`), not the 44 KB list. So no per-query clear sits in the write-back traffic. Checked 2026-11-16 against an outside read that assumed one (Kimi K3.1 Pro, the lab's outside round two).
