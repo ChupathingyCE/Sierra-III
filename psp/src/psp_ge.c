@@ -1554,6 +1554,8 @@ one uncached word each when there's nothing to do), and the ring takes
 pushes during any GE job unless "meyieldoff". psp_me_replay_look serves
 both, the ring at pick-up points under "ticksched" */
 extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
+extern void psp_me_replay_serve_begin(void); /* psp_me.c (mc-1g) */
+extern void psp_me_replay_serve_end(void);
 
 static void inflight_serve(void)
 {
@@ -1701,9 +1703,19 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		if (timed && kind_before >= 0)
 			replay_kinds_add(side, kind_before, &replay_timing_mark);
 		if (replay_inflight)
+		{
+			if (on_me)
+				psp_me_replay_serve_begin();
 			inflight_serve();
+			if (on_me)
+				psp_me_replay_serve_end();
+		}
 		else if (on_me && (++records & 31) == 0)
+		{
+			psp_me_replay_serve_begin();
 			psp_me_serve_audio();
+			psp_me_replay_serve_end();
+		}
 		if (timed && side)
 			replay_kinds_add(side, REPLAY_SERVED, &replay_timing_mark);
 
