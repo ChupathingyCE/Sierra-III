@@ -68986,7 +68986,237 @@ if S1COUNT:
     if not KTSTAMP:
         check_fail("psp_fixups: S1COUNT: needs PSP_KTSTAMP=1 (ktstamp's clock and window)")
     else:
-        print("psp_fixups: S1COUNT: slice 1's count frame (keep word s1count with ktstamp): no engine text cut")
+        print("psp_fixups: S1COUNT: slice 1's count frame (keep word s1count with ktstamp)")
+
+# S1COUNT class (c) (the lab's briefs/s1_count.md, task s1c-c): each biped pose store_pose_now_with makes on ktstamp's
+# timed ticks (its body and the stamps' inner store_pose_now_cs it wraps, TICK2_POSENEW_RENAMES) clocked with
+# psp_kt_clock and kept in FIXES_134's slot (so keep word nmreaders too), then put under its first reader's class at
+# psp_nmr_read: own update (kind 1, the computing top), another object (kind 2; attach when the reader top is the
+# object's parent or child), drawing (kind 3/4); closed unread (psp_nmr_close) is none, or held when attached or
+# root-animated (psp_nms_root_still's test, copied). Tagged living/dead/rider at the make; stage M. Hooks are
+# expressions on lines already there, the functions at the file's end, so no line above it moves. Count only: the
+# slots' own fields. A read on the ME classes the pose and leaves the add to the close (main CPU)
+S1COUNT_POSE_CUTS = (
+    ("the slot's fields",
+     "\tunsigned char type;      /* the object's type (biped, vehicle, weapon, ...) */\n};\n",
+     "\tunsigned char type;      /* the object's type (biped, vehicle, weapon, ...) */ "
+     "unsigned char s1, s1_class; unsigned long s1_us; /* (s1count) */\n};\n"),
+    ("the declarations",
+     "static long psp_nmr_top = NONE;\n",
+     "static long psp_nmr_top = NONE; static void psp_s1_pose_close(struct psp_nmr_slot *slot); "
+     "static void psp_s1_pose_read(struct psp_nmr_slot *slot, long object_index, int kind); "
+     "static unsigned long psp_s1_pose_mark(struct object_datum *object); "
+     "static void psp_s1_pose_done(long object_index, unsigned long mark); /* (s1count) */\n"),
+    ("psp_nmr_close's unread",
+     "\tint kind = slot->outside ? 5 : slot->read;\n\n\tif (!slot->tick)\n",
+     "\tint kind = slot->outside ? 5 : slot->read; if (slot->s1 | slot->s1_class) psp_s1_pose_close(slot); /* (s1count) */\n"
+     "\n\tif (!slot->tick)\n"),
+    ("psp_nmr_read's first read",
+     "\tslot->read = (unsigned char)kind;\n",
+     "\tslot->read = (unsigned char)kind; psp_s1_pose_read(slot, object_index, kind); /* (s1count) */\n"),
+    ("the pose's start",
+     "\treal radius = object->object.root->bounding_sphere_radius;\n\n\tstore_pose_now_cs(object_index, object, object_definition);\n",
+     "\treal radius = object->object.root->bounding_sphere_radius; unsigned long psp_s1_mark = psp_s1_pose_mark(object); /* (s1count) */\n"
+     "\n\tstore_pose_now_cs(object_index, object, object_definition);\n"),
+    ("the pose's end",
+     "\t\ttick2_cs_sphere(object_index, &center, radius);\n}\n",
+     "\t\ttick2_cs_sphere(object_index, &center, radius);\n\tpsp_s1_pose_done(object_index, psp_s1_mark); } /* (s1count) */\n"),
+)
+S1COUNT_POSE_TAIL = r"""
+/* psp_fixups.py (S1COUNT class (c), the lab's briefs/s1_count.md s1c-c): a biped pose's clock under its first reader's
+class, log only (psp_ktstamp.c's s1count line). s1: 0 nothing pending, else the tag + 1, 0x10 held; s1_class: the first
+read's class + 1 (0 none yet) */
+static int psp_s1_root_still(struct object_datum const *object)
+{
+	struct object_definition const *definition = object_definition_get(object->definition_index);
+
+	if (definition->object.animation_graph.index != NONE &&
+		animation_graph_definition_get(definition->object.animation_graph.index)->object_overlays.count > 0)
+		return 0;
+	if ((*tick2_anim_of(object->object.root)).animation_graph_index != NONE && (*tick2_anim_of(object->object.root)).state.index != NONE)
+	{
+		struct animation_graph *graph = animation_graph_definition_get((*tick2_anim_of(object->object.root)).animation_graph_index);
+		struct animation const *animation;
+
+		if (!VALID_INDEX((*tick2_anim_of(object->object.root)).state.index, graph->animations.count))
+			return 0;
+		animation = TAG_BLOCK_GET_ELEMENT(&graph->animations, (*tick2_anim_of(object->object.root)).state.index, struct animation);
+		if ((animation->nodes_with_translation_flags[0] | animation->nodes_with_rotation_flags[0] |
+			animation->nodes_with_scale_flags[0]) & 1)
+			return 0;
+	}
+	return 1;
+}
+
+static void psp_s1_pose_add(struct psp_nmr_slot *slot, int klass)
+{
+	psp_s1_tag((slot->s1 & 0x0f) - 1);
+	psp_s1_add(klass, PSP_S1_STAGE_M, slot->s1_us);
+	slot->s1 = 0;
+}
+
+/* closed: a pending pose goes under its first read's class, else none, or held */
+static void psp_s1_pose_close(struct psp_nmr_slot *slot)
+{
+	if (slot->s1 && !psp_work_on_me())
+		psp_s1_pose_add(slot, slot->s1_class ? slot->s1_class - 1 : (slot->s1 & 0x10) ? PSP_S1_C_HELD : PSP_S1_C_NONE);
+	slot->s1 = 0;
+	slot->s1_class = 0;
+}
+
+/* the first read since the compute (psp_nmr_read's kind): its class, and the add when the pose is pending */
+static void psp_s1_pose_read(struct psp_nmr_slot *slot, long object_index, int kind)
+{
+	int klass = PSP_S1_C_DRAW;
+
+	if (!slot->s1 && !psp_s1_on)
+		return;
+	if (kind == 1)
+		klass = PSP_S1_C_OWN;
+	else if (kind == 2)
+	{
+		struct object_datum *top = psp_nmr_top != NONE ? object_try_and_get(psp_nmr_top) : NULL;
+
+		klass = psp_nmr_top != NONE && (object_get(object_index)->object.parent_object_index == psp_nmr_top ||
+			(top && top->object.parent_object_index == object_index)) ? PSP_S1_C_ATTACH : PSP_S1_C_OTHER;
+	}
+	slot->s1_class = (unsigned char)(klass + 1);
+	if (slot->s1 && !psp_work_on_me())
+		psp_s1_pose_add(slot, klass);
+}
+
+/* store_pose_now_with's start: a biped's pose on a timed tick, off the ME, with the slots there */
+static unsigned long psp_s1_pose_mark(struct object_datum *object)
+{
+	return psp_s1_on && !psp_work_on_me() && psp_nmr_on > 0 && psp_nmr_slots && object->object.type == _object_type_biped ?
+		psp_kt_clock() | 1 : 0;
+}
+
+/* its end: the clock into the slot psp_nmr_computed opened, tagged, held marked; a read already made adds it now */
+static void psp_s1_pose_done(long object_index, unsigned long mark)
+{
+	struct psp_nmr_slot *slot;
+	struct object_datum *object;
+
+	if (!mark)
+		return;
+	slot = &psp_nmr_slots[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (PSP_NMR_SLOTS - 1)];
+	if (!slot->tick || slot->object_index != object_index)
+		return;
+	object = object_get(object_index);
+	slot->s1_us = psp_kt_clock() - mark;
+	slot->s1 = (unsigned char)((1 + PSP_S1_WHO(object)) | (object->object.parent_object_index != NONE ||
+		object->object.first_child_object_index != NONE || !psp_s1_root_still(object) ? 0x10 : 0));
+	if (slot->s1_class)
+		psp_s1_pose_add(slot, slot->s1_class - 1);
+}
+"""
+def s1count_pose_cut(tree):
+    if not S1COUNT or not KTSTAMP:
+        return 0
+    if not TICK2_POSENEW:
+        check_fail("psp_fixups: S1COUNT pose: needs PSP_TICK2_POSENEW=1 (the pose is store_pose_now_with, TICK2_POSENEW_RENAMES)")
+        return 0
+    objects_c = os.path.join(tree, "source/objects/objects.c")
+    c = open(objects_c, errors="surrogateescape").read()
+    lines = c.count("\n")
+    for what, old, new in S1COUNT_POSE_CUTS:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: S1COUNT pose: %s's anchor %r matches %d times" % (what, old[:60], c.count(old)))
+            return 0
+        c = c.replace(old, new)
+    if c.count("\n") != lines:
+        check_fail("psp_fixups: S1COUNT pose: a hook moved objects.c's lines")
+        return 0
+    c += S1COUNT_POSE_TAIL
+    if not CHECK_ONLY:
+        open(objects_c, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: S1COUNT pose: class (c)'s biped poses by first reader in objects.c (%d hooks, keep words s1count "
+          "and nmreaders with ktstamp)" % len(S1COUNT_POSE_CUTS))
+    return 1
+s1count_pose_cut(TREE)
+
+# S1COUNT class (d), second half (the lab's briefs/s1_count.md, task s1c-d2; the first half is store_coll.c's met and
+# features): in collision_get_features_in_sphere's object walk, as SWEEPREUSE left it, each object met in a walked
+# cluster (SWEEPREUSE's met site) is clocked with psp_kt_clock to its test's outcome: one that passes (into the body
+# that gathers its features) adds PSP_S1_D_PASSED 1, one that doesn't adds its clock to PSP_S1_D_UNPASSED; stage G,
+# tagged by the gather's ignored object (the biped). Only on s1count's timed ticks, off the ME, while psp_sr_on_pill
+# (the biped's sweep). Hooks are expressions on lines already there, the helpers at the file's end: no line moves.
+# Count only: psp_sr_near_count isn't read (-1 past 8)
+S1COUNT_COLL_CUTS = (
+    ("the declarations",
+     "boolean collision_get_features_in_sphere(\n",
+     "static unsigned long psp_s1d_mark; static unsigned long psp_s1d_met(void); static void psp_s1d_passed(long biped_index); "
+     "static void psp_s1d_unpassed(long biped_index); /* (s1count) */ boolean collision_get_features_in_sphere(\n"),
+    ("the met site",
+     "\t\t\t\t\t\tif (psp_sr_on_pill) psp_sr_met++; /* PSP_SWEEPREUSE: an object in a walked cluster */\n",
+     "\t\t\t\t\t\tif (psp_sr_on_pill) psp_sr_met++; /* PSP_SWEEPREUSE: an object in a walked cluster */ "
+     "psp_s1d_mark = psp_s1_on && psp_sr_on_pill ? psp_s1d_met() : 0; /* (s1count) */\n"),
+    ("the pass",
+     "\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE: an object in reach past the gather's filter is a near one */\n",
+     "\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE: an object in reach past the gather's filter is a near one */ "
+     "if (psp_s1d_mark) psp_s1d_passed(ignore_object_index); /* (s1count) */\n"),
+    ("the fail",
+     "\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n",
+     "\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n\t\t\t\t\t\t\t}\n"
+     "\t\t\t\t\t\t} else if (psp_s1d_mark) psp_s1d_unpassed(ignore_object_index); /* (s1count) */\n\t\t\t\t\t}\n"),
+)
+S1COUNT_COLL_TAIL = r"""
+/* psp_fixups.py (S1COUNT class (d), second half, the lab's briefs/s1_count.md s1c-d2): the gather's objects met in a
+walked cluster, clocked from the met site to the test's outcome, log only (psp_ktstamp.c's s1count line) */
+static unsigned long psp_s1d_met(void)
+{
+	return psp_work_on_me() ? 0 : psp_kt_clock() | 1;
+}
+
+static void psp_s1d_tag(long biped_index)
+{
+	if (biped_index != NONE)
+		psp_s1_tag(PSP_S1_WHO(object_get(biped_index)));
+}
+
+/* passed: a count */
+static void psp_s1d_passed(long biped_index)
+{
+	psp_s1d_mark = 0;
+	psp_s1d_tag(biped_index);
+	psp_s1_add(PSP_S1_D_PASSED, PSP_S1_STAGE_G, 1);
+}
+
+/* not passed: its clock from the met site */
+static void psp_s1d_unpassed(long biped_index)
+{
+	unsigned long us = psp_kt_clock() - psp_s1d_mark;
+
+	psp_s1d_mark = 0;
+	psp_s1d_tag(biped_index);
+	psp_s1_add(PSP_S1_D_UNPASSED, PSP_S1_STAGE_G, us);
+}
+"""
+def s1count_coll_cut(tree):
+    if not S1COUNT or not KTSTAMP:
+        return 0
+    if not SWEEPREUSE:
+        check_fail("psp_fixups: S1COUNT coll: needs PSP_SWEEPREUSE (its met site and psp_sr_on_pill)")
+        return 0
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    c = open(cp, errors="surrogateescape").read()
+    lines = c.count("\n")
+    for what, old, new in S1COUNT_COLL_CUTS:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: S1COUNT coll: %s's anchor %r matches %d times" % (what, old[:60], c.count(old)))
+            return 0
+        c = c.replace(old, new)
+    if c.count("\n") != lines:
+        check_fail("psp_fixups: S1COUNT coll: a hook moved collisions.c's lines")
+        return 0
+    c += S1COUNT_COLL_TAIL
+    if not CHECK_ONLY:
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: S1COUNT coll: class (d)'s passed and unpassed objects in collisions.c's sphere gather (%d hooks)"
+          % len(S1COUNT_COLL_CUTS))
+    return 1
+s1count_coll_cut(TREE)
 
 if CHECK_ONLY:
     for message in count_failures:

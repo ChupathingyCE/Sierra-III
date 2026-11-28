@@ -86,6 +86,28 @@ extern int psp_verify_call;
 #define biped_verify_object_vectors(biped_index, state) \
 	((void)(psp_verify_call && (biped_verify_object_vectors((biped_index), (state)), 1)))
 #endif
+#ifdef PSP_S1COUNT
+/* s1count's classes (a) and (b) (the lab's briefs/s1_count.md, task s1c-a; docs/ktstamp.md's s1count), log only:
+   the marks only read the game's state and write their own table (end of file). The #line below keeps every later
+   line's number, so the off form's lines and the profiles' line checksums are s1c-hdr's */
+void psp_s1a_open(long biped_index, struct biped_datum *biped);
+void psp_s1a_resume(long biped_index, struct biped_datum *biped);
+void psp_s1a_close(int stage);
+void psp_s1b_open(struct biped_datum *biped, real_point3d const *target);
+void psp_s1b_close(struct biped_datum *biped);
+#define PSP_S1A_OPEN(index, biped) (psp_kt_count && !psp_work_on_me() ? psp_s1a_open((index), (biped)) : (void)0)
+#define PSP_S1A_RESUME(index, biped) (psp_s1_on && !psp_work_on_me() ? psp_s1a_resume((index), (biped)) : (void)0)
+#define PSP_S1A_CLOSE(stage) (psp_s1_on && !psp_work_on_me() ? psp_s1a_close(stage) : (void)0)
+#define PSP_S1B_OPEN(biped, target) (psp_s1_on && !psp_work_on_me() ? psp_s1b_open((biped), (target)) : (void)0)
+#define PSP_S1B_CLOSE(biped) (psp_s1_on && !psp_work_on_me() ? psp_s1b_close(biped) : (void)0)
+#else
+#define PSP_S1A_OPEN(index, biped) ((void)0)
+#define PSP_S1A_RESUME(index, biped) ((void)0)
+#define PSP_S1A_CLOSE(stage) ((void)0)
+#define PSP_S1B_OPEN(biped, target) ((void)0)
+#define PSP_S1B_CLOSE(biped) ((void)0)
+#endif
+#line 89
 
 static struct store_intent store_intents[STORE_INTENT_ENTRIES];
 /* M's own table by the same n (Part 7): bipedstage3's record less what G reads. I's code writes it at the call, M
@@ -1445,12 +1467,12 @@ void store_intent_run(short k, long biped_index)
 		return;
 	biped = biped_get(biped_index);
 	motion = &store_motions[n];
-	outer = store_motion_owner_set(biped_index);
+	outer = store_motion_owner_set(biped_index); PSP_S1A_OPEN(biped_index, biped);
 	stop = store_intent_body(biped_index, biped, biped_definition_get(biped->definition_index), motion, &flags,
 		&position, &velocity);
 	if (stop)
 		store_intent_keep(k, n, stop, flags, &position, &velocity, motion->physics.height, motion->physics.width);
-	store_motion_owner_put(outer);
+	PSP_S1A_CLOSE(PSP_S1_STAGE_I); store_motion_owner_put(outer);
 }
 
 /* biped_update from the pre-update verify (5052) to the move's call: the animation's opening values (idle, not
@@ -2494,7 +2516,7 @@ static void store_motion_moved(long biped_index, struct biped_datum *biped, stru
 		{
 			new_biped_position.z -= physics->width;
 		}
-		object_translate(biped_index, &new_biped_position, NULL);
+		PSP_S1B_OPEN(biped, &new_biped_position); object_translate(biped_index, &new_biped_position, NULL); PSP_S1B_CLOSE(biped);
 
 		line2->support_surface_index = physics->support_surface_index;
 		line3->pathfinding_point = new_biped_position;
@@ -4017,10 +4039,10 @@ boolean store_motion_update(long biped_index)
 	if (intent && intent->biped_index == biped_index)
 	{
 		biped_verify_object_vectors(biped_index, "pre-update");
-		store_motion_stat[intent->stop == 1 ? 0 : 1]++;
+		store_motion_stat[intent->stop == 1 ? 0 : 1]++; PSP_S1A_RESUME(biped_index, biped);
 		store_motion_from(biped_index, biped, definition, &store_motions[intent - store_intents], intent->stop,
 			intent->flags);
-	}
+	PSP_S1A_CLOSE(PSP_S1_STAGE_M); }
 	else
 	{
 		struct store_motion *motion = &store_motions[STORE_MOTION_SPARE];
@@ -4035,11 +4057,253 @@ boolean store_motion_update(long biped_index)
 			store_motion_stat[4]++;
 		else
 			store_motion_stat[TEST_FLAG(biped->object.damage_flags, _object_dead_bit) ? 3 : 2]++;
-		stop = store_intent_body(biped_index, biped, definition, motion, &flags, &position, &velocity);
+		PSP_S1A_OPEN(biped_index, biped); stop = store_intent_body(biped_index, biped, definition, motion, &flags, &position, &velocity);
 		if (stop == 0)
 			store_motion_stat[6]++;
 		store_motion_from(biped_index, biped, definition, motion, stop, flags);
-	}
+	PSP_S1A_CLOSE(PSP_S1_STAGE_M); }
 	store_motion_owner_put(outer);
 	return TRUE;
 }
+
+#ifdef PSP_S1COUNT
+/* s1count's (a) and (b) (the lab's briefs/s1_count.md, task s1c-a). Read only: every function here reads the game's
+   state and writes only its own statics and s1count's sums (psp_s1_tag, psp_s1_add).
+
+   (a) An intent tick whose inputs are bit-equal to last tick's. The inputs are what I's body (store_intent_body and
+   what it calls, the head, turning, the physics' build) reads that can change from tick to tick, as a copy taken at
+   the body's start, before it writes: the root's position, velocity, forward, up and angular velocity; CONTROL and
+   line 1 whole; line 2's ground plane, bank, support surface, landing and the airborne and slipping counters; ANIM's
+   state, base seat and flags; the object animation's graph and index, and its frame when its frame info is one of the
+   three translations _moving reads (else the frame isn't read); the datum's damage flags, flags, parent, recent body
+   damage, biped flags, actor, body stun, unit flags and player, the player's speed multiplier; for a rider, the
+   parent's type, flags, damage flags and root motion (the vehicle's speech and ejection tests read them). Left out as
+   constant in a map: the definitions and the game globals; as keep-exact (the brief's list): game time and the speech
+   counters (gunner_inactive_ticks, last_falling_communication_time). The copy is taken every tick with ktstamp's keep
+   word (psp_kt_count; the first copy is equal to nothing), off the ME, one a biped by its datum index, and compared
+   with the one taken at the previous game time. On ktstamp's timed ticks, an equal intent's cycles are added: I's
+   body and keep in store_intent_run (stage I); M's resume of it in store_motion_update, and the whole update of a
+   biped with no intent there (stage M; M's cells hold the move and the tail, whose keep-exact parts the read can't
+   take out: a ceiling). A biped whose I ran on the ME has no copy that tick, so its next tick is unequal.
+
+   (b) A translate whose target is bit-equal to the position the object has, with its cluster set unchanged: the
+   root's location and bounding sphere (centre, radius), which the reconnect's cluster walk is a function of, are
+   bit-equal after the call to before it. Reached only at stop 1 (store_motion_moved), a suspended biped too; its
+   cycles are object_translate's, stage M, on timed ticks */
+struct psp_s1a_inputs
+{
+	real_point3d position;
+	real_vector3d translational_velocity, forward, up, angular_velocity;
+	struct tick2_unit_ctl control;
+	struct tick2_unit_bip1 line1;
+	real_plane3d ground_plane;
+	real bank;
+	long support_surface_index;
+	long landing, airborne_ticks, slipping_ticks;
+	long anim_state, anim_base_seat, anim_flags;
+	long graph, animation, frame;
+	long damage_flags, object_flags, parent, biped_flags, actor, unit_flags, player;
+	real recent_body_damage, body_stun, speed_multiplier;
+	long parent_type, parent_flags, parent_damage_flags;
+	real_point3d parent_position;
+	real_vector3d parent_velocity, parent_up, parent_angular_velocity;
+};
+
+#define PSP_S1A_SLOTS 256
+static struct psp_s1a_slot
+{
+	long biped_index, time;
+	int equal;
+	struct psp_s1a_inputs inputs;
+} psp_s1a_slots[PSP_S1A_SLOTS];
+static struct psp_s1a_slot *psp_s1a_cur;
+static int psp_s1a_tag; /* (a)'s biped, kept: psp_s1_tag is one global the other classes' adds set too */
+static unsigned long psp_s1a_mark, psp_s1b_mark, psp_s1a_full;
+static int psp_s1b_same;
+static struct location psp_s1b_location;
+static real_point3d psp_s1b_center;
+static real psp_s1b_radius;
+
+static void psp_s1a_take(struct biped_datum *biped, struct psp_s1a_inputs *in)
+{
+	struct tick2_root *root = biped->object.root;
+	struct unit_animation *anim = tick2_unit_anim_of(root);
+	struct tick2_unit_bip2 *line2 = tick2_unit_bip2_of(root);
+	struct object_animation_state *object_anim = tick2_anim_of(root);
+
+	memset(in, 0, sizeof(*in));
+	in->position = root->position;
+	in->translational_velocity = root->translational_velocity;
+	in->forward = root->forward;
+	in->up = root->up;
+	in->angular_velocity = root->angular_velocity;
+	in->control = *tick2_unit_ctl_of(root);
+	in->line1 = *tick2_unit_bip1_of(root);
+	in->ground_plane = line2->ground_plane;
+	in->bank = line2->bank;
+	in->support_surface_index = line2->support_surface_index;
+	in->landing = line2->landing;
+	in->airborne_ticks = line2->airborne_ticks;
+	in->slipping_ticks = line2->slipping_ticks;
+	in->anim_state = anim->state;
+	in->anim_base_seat = anim->base_seat_index;
+	in->anim_flags = anim->flags;
+	in->graph = object_anim->animation_graph_index;
+	in->animation = object_anim->state.index;
+	in->frame = NONE;
+	if (object_anim->state.index != NONE)
+	{
+		struct animation_graph *graph = animation_graph_definition_get(object_anim->animation_graph_index);
+		struct animation *animation = TAG_BLOCK_GET_ELEMENT(&graph->animations, object_anim->state.index,
+			struct animation);
+
+		switch (animation->frame_info_type)
+		{
+		case _animation_frame_info_xy_translation:
+		case _animation_frame_info_xy_translation_yaw_rotation:
+		case _animation_frame_info_xyz_translation_yaw_rotation:
+			in->frame = object_anim->state.frame_index;
+			break;
+		}
+	}
+	in->damage_flags = biped->object.damage_flags;
+	in->object_flags = biped->object.flags;
+	in->parent = biped->object.parent_object_index;
+	in->recent_body_damage = biped->object.recent_body_damage;
+	in->biped_flags = biped->biped.flags;
+	in->actor = biped->unit.actor_index;
+	in->unit_flags = biped->unit.flags;
+	in->body_stun = biped->unit.body_stun;
+	in->player = biped->unit.player_index;
+	if (biped->unit.player_index != NONE)
+		in->speed_multiplier = player_get(biped->unit.player_index)->speed_multiplier;
+	if (biped->object.parent_object_index != NONE)
+	{
+		struct object_datum *parent = object_get(biped->object.parent_object_index);
+
+		in->parent_type = parent->object.type;
+		in->parent_flags = parent->object.flags;
+		in->parent_damage_flags = parent->object.damage_flags;
+		in->parent_position = parent->object.root->position;
+		in->parent_velocity = parent->object.root->translational_velocity;
+		in->parent_up = parent->object.root->up;
+		in->parent_angular_velocity = parent->object.root->angular_velocity;
+	}
+}
+
+/* the biped's slot: its own, else a free one or one not written at the last game time (linear probe of 8); none
+   left, the biped goes uncompared (counted, logged at the first) */
+static struct psp_s1a_slot *psp_s1a_slot(long biped_index, long time)
+{
+	unsigned long at = (unsigned long)biped_index * 2654435761ul;
+	struct psp_s1a_slot *spare = NULL;
+	int k;
+
+	for (k = 0; k < 8; k++)
+	{
+		struct psp_s1a_slot *slot = &psp_s1a_slots[(at + k) % PSP_S1A_SLOTS];
+
+		if (slot->biped_index == biped_index && slot->time)
+			return slot;
+		if (!spare && (!slot->time || slot->time < time - 1))
+			spare = slot;
+	}
+	if (spare)
+	{
+		spare->biped_index = biped_index;
+		spare->time = 0;
+		return spare;
+	}
+	if (!psp_s1a_full++)
+		platform_psp_log("s1count: (a)'s table full at gt %ld: a biped goes uncompared", time);
+	return NULL;
+}
+
+/* I's body's start (store_intent_run), or the whole update's (store_motion_update): every tick, the copy and the
+   compare; a second open in the same game time keeps the first's answer */
+void psp_s1a_open(long biped_index, struct biped_datum *biped)
+{
+	long time = game_time_get() + 1; /* 0 marks a free slot */
+	struct psp_s1a_slot *slot = psp_s1a_slot(biped_index, time);
+	struct psp_s1a_inputs in;
+
+	psp_s1a_cur = NULL;
+	if (!slot)
+		return;
+	if (slot->time != time)
+	{
+		psp_s1a_take(biped, &in);
+		slot->equal = slot->time == time - 1 && !memcmp(&in, &slot->inputs, sizeof(in));
+		slot->inputs = in;
+		slot->time = time;
+	}
+	if (psp_s1_on)
+	{
+		psp_s1a_tag = PSP_S1_WHO(biped);
+		psp_s1_tag(psp_s1a_tag);
+		psp_s1a_cur = slot;
+		psp_s1a_mark = psp_kt_clock();
+	}
+}
+
+/* M's resume of a kept intent (timed ticks): the answer I's open gave this game time */
+void psp_s1a_resume(long biped_index, struct biped_datum *biped)
+{
+	long time = game_time_get() + 1;
+	unsigned long at = (unsigned long)biped_index * 2654435761ul;
+	int k;
+
+	psp_s1a_cur = NULL;
+	for (k = 0; k < 8; k++)
+	{
+		struct psp_s1a_slot *slot = &psp_s1a_slots[(at + k) % PSP_S1A_SLOTS];
+
+		if (slot->biped_index == biped_index && slot->time == time)
+		{
+			psp_s1a_tag = PSP_S1_WHO(biped);
+			psp_s1_tag(psp_s1a_tag);
+			psp_s1a_cur = slot;
+			psp_s1a_mark = psp_kt_clock();
+			return;
+		}
+	}
+}
+
+void psp_s1a_close(int stage)
+{
+	if (psp_s1a_cur && psp_s1a_cur->equal)
+	{
+		unsigned long cycles = psp_kt_clock() - psp_s1a_mark;
+
+		psp_s1_tag(psp_s1a_tag);
+		psp_s1_add(PSP_S1_A, stage, cycles);
+	}
+	psp_s1a_cur = NULL;
+}
+
+void psp_s1b_open(struct biped_datum *biped, real_point3d const *target)
+{
+	struct tick2_root *root = biped->object.root;
+
+	psp_s1b_same = !memcmp(target, &root->position, sizeof(*target));
+	psp_s1b_location = root->location;
+	psp_s1b_center = root->bounding_sphere_center;
+	psp_s1b_radius = root->bounding_sphere_radius;
+	psp_s1b_mark = psp_kt_clock();
+}
+
+void psp_s1b_close(struct biped_datum *biped)
+{
+	unsigned long cycles = psp_kt_clock() - psp_s1b_mark;
+	struct tick2_root *root = biped->object.root;
+
+	if (psp_s1b_same &&
+		!memcmp(&psp_s1b_location, &root->location, sizeof(psp_s1b_location)) &&
+		!memcmp(&psp_s1b_center, &root->bounding_sphere_center, sizeof(psp_s1b_center)) &&
+		!memcmp(&psp_s1b_radius, &root->bounding_sphere_radius, sizeof(psp_s1b_radius)))
+	{
+		psp_s1_tag(PSP_S1_WHO(biped));
+		psp_s1_add(PSP_S1_B, PSP_S1_STAGE_M, cycles);
+	}
+}
+#endif
