@@ -541,6 +541,27 @@ Written by builder2, 2026-11-27 10:30, under the same rulings as §3.4.1 (shares
 - **Its first asks.** (1) **The re-baseline, as the passes' ceiling on today's build:** one PSP-1000 pair on b30's fight, A today's default, B `changesmall99999 glowsmall99999 nodetail` (keep numbers as prefix and digits, PASSSMALL's `changesmall16`; every non-first-person change, glow and sheen pass and every level detail pass left out, a look change priced only, never shipped), 2 a side, reading the frame, the tick, the ME's render job and the drawing. B - A is the most this avenue can free on today's build; if it is under 0.5 ms on the frame and on the ME's job, every form here closes on [M]. (2) The uniform parts a frame (change and glow masks uniform over the part, by the bake's mask table), an exact emulator field riding D3's store batch (§3.4.2) beside D4's two and D5's one, on b30 and c20.
 - **The sheet's verdict [D, a lead on an archive ME price, today's counts and an unpriced GE].** **No form here is a main-CPU lever: every one frees ~0 of the main CPU's drawing**, the target of this page. **TEXFIT1b and DF remove no pass and are said so and closed as fewer-passes cases** (TEXFIT1b stays stopped on coverage, its room ≤ ~0.2 ms; DF stays open as a restoration, a look question for its own row). **CP's fold** frees ≤ ~0.36 ms of the ME at half on b30 alone (a ceiling far above b30's uniform parts) and ≤ ~0.18 on c20, ~0 after D3, so its ME side is under the bar; its GE side (≤ ~1.5 ms at half on b30 [U, a lead on a lead]) is the open figure, and frame time only where the GE binds. So the fold waits on ask (1): if B - A clears 0.5 ms on the frame, the fold gets its case on the uniform-parts count (ask (2)); if not, it closes with the rest. **The level's detail passes** are the largest ME figure in the avenue (~0.96 at half on b30 alone [U]) and go with D2's bake on the ME either way; removing them outright is a look change, Sheepdog01's call, and DETAILNEAR's form is parked under the old path. Named to the lead with §1-§4.
 
+### 3.5 Each part over its share [D, on §2.2's census and §3.1's shares]
+
+builder2, 2026-11-28 05:3x, desk, no run. ms a frame. Share: §3.1's last column (equal cut). Over = ms less share. `rest` is end, begin, setup and unnamed (§3.1). PSP-1000, c5ff3114, drawsplit B. b30's fight and c20's peak line are B's run 1, as §3.1 takes them; c20's whole is B's mean of 2 (row `drawmain_census`). Ranked by over on b30's fight.
+
+| Rank | Part | Share | b30 fight mean | over | b30 peak | over | c20 whole | over | c20 peak line (~1619-2196) | over |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | objects | 4.61 | 15.7 | 11.09 | 15.9 | 11.29 | 5.55 | 0.94 | 8.0 | 3.39 |
+| 2 | world | 3.38 | 11.5 | 8.12 | 11.5 | 8.12 | 9.36 | 5.98 | 10.2 | 6.82 |
+| 3 | effects | 1.09 | 3.2 | 2.11 | 3.2 | 2.11 | 2.13 | 1.04 | 3.7 | 2.61 |
+| 4 | hud | 0.91 | 2.4 | 1.49 | 2.4 | 1.49 | 1.84 | 0.93 | 3.1 | 2.19 |
+| 5 | rest | 0.18 | 0.5 | 0.32 | 0.5 | 0.32 | 0.60 | 0.42 | 0.6 | 0.42 |
+| 6 | transparent | 0.56 | 0.8 | 0.24 | 0.8 | 0.24 | 1.81 | 1.25 | 1.9 | 1.34 |
+| 7 | flares | 0.27 | 0.3 | 0.03 | 0.3 | 0.03 | 0.93 | 0.66 | 0.8 | 0.53 |
+| | **sum of parts** | 11.00 | **34.4** | 23.40 | - | - | **22.22** | 11.22 | **28.3** | 17.30 |
+| | the stretch's `d` | | 34.4 | | | | 22.1 | | 28.2 | |
+
+- **Peaks.** drawsplit prints no per-frame peak (a part's three figures are mean/p50/p99, and a p99 of 60.0 is the histogram's top bin), so a peak here is the part's highest 300-frame line in the stretch [D]. One line covers b30's fight, so its peak is the higher of B's two runs on that line: only objects moves. The sum row has none, since parts' peaks needn't fall in one run.
+- **c20 outside the peak line.** Some parts' highest lines of the whole run lie elsewhere (run 1: world 11.3 and transparent 2.9 on the line to frame 1500, flares 1.9 on the line to frame 300). They are not in the table's peak.
+- **Lines read** (`toolbox/drawsplitwin.py`; `toolbox/logfetch.py sierra-hw <run> runN/log.txt`). b30: sierra-hw 45943027708, `run2/log.txt:1753` and `run4/log.txt:1752` (B's runs 1 and 2; the line to frame 900, ticks ~1103-1640 by drawsplitwin's heartbeats, where §2.2 gives ~1108-1732). c20: sierra-hw 45945230751, `run2/log.txt:2101` and `run4/log.txt:2097` (the line to frame 1200); the whole is `run2/log.txt:976, 1283, 1609, 2101, 2506, 2834` and run 4's six.
+- No share is changed and no cut is proposed here.
+
 ## 4. Placement and the build cut [D]
 
 Written by builder2, 2026-11-27 10:36, for the lab's briefs/draw_main.md task 4 (:34) and its re-cut (:55: "§4, D1 (or D2/D3 if the swap holds) as the first slice, with its prediction and kill bar"), on §3's cases under the lab's decisions 2026-11-27 07:2x (A) (order D1, D3, D2, D4-D6; a share is a lead counted at half; each slice's kill bar is its own whole-frame PSP pair). The goal's frame throughout: one tick a frame, 30 fps (33.3 ms), both cores.
