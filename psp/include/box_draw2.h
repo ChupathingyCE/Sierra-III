@@ -36,6 +36,12 @@ unsigned int draw2_close(struct draw2_sub *sub);
 /* the arena's figures for the log: its bytes, this frame's words, the
 frames' highest, the models drawn the old way for want of room */
 void draw2_report(void);
+/* the rso count (the lab's decisions 2026-11-27 19:2x (1)), log only: a far
+model drawn the old way, by why (rso sent its kept record, rso is capturing
+its walk, draw2_far gave 0), with the words its sub-list would hold (its
+shown groups' words as draw2_far writes them, and the RET). Returns 1 */
+enum { DRAW2_RSO_SENT, DRAW2_RSO_CAUGHT, DRAW2_FELL, DRAW2_WHYS };
+int draw2_tally(int why, const void *block, unsigned int mask_low, unsigned int mask_high);
 
 static inline unsigned int draw2_float(float f)
 {

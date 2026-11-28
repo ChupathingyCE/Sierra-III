@@ -7,6 +7,7 @@ of DRAW2_SET_BYTES, 36 KB. Without it every far model is drawn the old way */
 #include <pspkernel.h>
 #include <malloc.h>
 #include <stddef.h>
+#include <string.h>
 #include "../include/box_draw2.h"
 
 /* the SDK's malloc.h doesn't declare it under the port's flags (farcall1's
@@ -69,12 +70,55 @@ unsigned int draw2_close(struct draw2_sub *sub)
 	return bytes;
 }
 
+static unsigned long draw2_why_models[DRAW2_WHYS], draw2_why_words[DRAW2_WHYS];
+static unsigned int draw2_old_frame = 0, draw2_old_high = 0, draw2_old_at = 0;
+
+int draw2_tally(int why, const void *block, unsigned int mask_low, unsigned int mask_high)
+{
+	const unsigned char *at;
+	unsigned int group, words = 1;
+
+	for (at = block, group = 0; at && group < 64; group++)
+	{
+		const unsigned int *head = (const unsigned int *)at;
+		int shown = group < 32 ? (mask_low >> group) & 1 : (mask_high >> (group - 32)) & 1;
+
+		if (shown && head[2] && head[4] >= 3)
+		{
+			unsigned int source = (head[15] >> 16) & 7;
+
+			words += (source >= 1 && source <= 4 ? 4 : 1) + 6 +
+				13 * ((head[1] & 0x20000u) ? (head[11] > 8 ? 8 : head[11]) + 1 : 1);
+		}
+		at = head[14] ? at + head[14] : NULL;
+	}
+	draw2_why_models[why]++;
+	draw2_why_words[why] += words;
+	if (draw2_old_at != draw2_frames)
+	{
+		draw2_old_at = draw2_frames;
+		draw2_old_frame = 0;
+	}
+	draw2_old_frame += words;
+	if (draw2_old_frame > draw2_old_high)
+		draw2_old_high = draw2_old_frame;
+	return 1;
+}
+
 void draw2_report(void)
 {
 	if (!draw2_arena)
 		return;
 	platform_log("GE: draw2: %lu far sub-lists in %u frames, the most words a frame %u of %d, %lu models drawn the old way for want of room",
 		draw2_subs, draw2_frames, draw2_high, DRAW2_SET_WORDS, draw2_refused);
+	platform_log("GE: draw2: old-way far models (words) in %u frames: rso sent %lu (%lu), rso capturing %lu (%lu), draw2_far 0 %lu (%lu); the most words a frame %u",
+		draw2_frames, draw2_why_models[DRAW2_RSO_SENT], draw2_why_words[DRAW2_RSO_SENT],
+		draw2_why_models[DRAW2_RSO_CAUGHT], draw2_why_words[DRAW2_RSO_CAUGHT],
+		draw2_why_models[DRAW2_FELL], draw2_why_words[DRAW2_FELL], draw2_old_high);
 	draw2_subs = draw2_refused = 0;
 	draw2_frames = draw2_high = 0;
+	memset(draw2_why_models, 0, sizeof(draw2_why_models));
+	memset(draw2_why_words, 0, sizeof(draw2_why_words));
+	draw2_old_frame = draw2_old_high = 0;
+	draw2_old_at = 0;
 }

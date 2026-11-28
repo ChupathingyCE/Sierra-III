@@ -14810,6 +14810,13 @@ static int rso_send(unsigned int *entry)
 	memcpy(defer_base + defer_used, record, words * sizeof(defer_word));
 	defer_used += words;
 	defer_records += entry[RSO_RECORDS];
+#ifdef PSP_DRAW2
+	/* the rso count (decisions 2026-11-27 19:2x (1)): the far forms this kept
+	walk sends the old way, once it is sent */
+	for (at = record; at < end; at += at->u >> 8)
+		if ((at->u & 0xFF) == DEFER_DRAW_FAR)
+			draw2_tally(DRAW2_RSO_SENT, at[1].p, at[2].u, at[3].u);
+#endif
 	rso_sent++;
 	rso_sent_words += words;
 	return 1;
@@ -18407,7 +18414,8 @@ int psp_far_draw(unsigned long model, float pixels, const char *permutations, in
 		record for a sprite, for a model rso is keeping (a kept CALL would name
 		a set three frames gone; rso's capture refuses the kind), or with no
 		room in the frame's set */
-		if (sprite || psp_rso_capturing || !draw2_far(block, mask[0], mask[1], tints))
+		if (sprite || (psp_rso_capturing ? draw2_tally(DRAW2_RSO_CAUGHT, block, mask[0], mask[1]) :
+			!draw2_far(block, mask[0], mask[1], tints) && draw2_tally(DRAW2_FELL, block, mask[0], mask[1])))
 #endif
 		psp_ge_draw_far(block, mask[0], mask[1], tints, sprite);
 		if (sprite)
