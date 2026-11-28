@@ -230,7 +230,7 @@ Sierra-III `builder/ticksched2-step1` b480d399 (on master/tock162 cd1c036b). Kee
 The lab's `briefs/tc_tick.md` (the lead 19:5x, re-briefed 20:5x). Its "§11.1-§11.4" are this page's §12.1-§12.4, numbered after the joined page's last section (task 0). The goal's frame is one tick a frame at 30 fps on both cores (Sheepdog01 2026-11-26 19:3x). Every figure here is labelled by how it was measured. A figure from the archive or a two-tick frame is a lead, never the goal's.
 
 - **§12.1, the ME's column at 30 fps [M]:** below (written 2026-11-28 01:36).
-- **§12.2, the two uses side by side [D]:** on §12.1's figures.
+- **§12.2, the two uses side by side [D]:** below (written 2026-11-28 01:42).
 - **§12.3, the phase plan [D]:** below.
 - **§12.4, the split and its price [D cost sheet]:** last, on §12.1-§12.3.
 
@@ -263,6 +263,30 @@ The sums check: b30 7528 + 3060 + 5760 + 595 + 920 + 6114 = 23,977 us named, + 7
 - The points job's ME time, either map: no filed row.
 - A frame peak for any part: the rows hold 300-frame block means only.
 - The rest's split, both maps: 7.56 ms on b30 and 11.12 on c20 not named by kind.
+
+### 12.2 The two uses side by side [D] (written 2026-11-28 01:42)
+
+The lab's `docs/rewrite/direction_2026-11-18.md` §5b table re-read with §12.1's measured column in place of its b156 beach figures. It is not a choice of shape: §5b settled the two as not a fork (Sheepdog01 2026-11-18 23:54), and placement goes by a whole-frame PSP pair. The two columns are REBUILD.md:129's: **both cores simulate** (this page's shape, §12.3's plan) and **one simulates, one draws** (the drawing's walk moved whole to the ME, read-only on the world). Every figure names its row (the lab's `findings/rows.tsv`); a sum across rows is [D, derived here] and mixes builds and PSP models, said beside it.
+
+| | both cores simulate | one simulates, one draws |
+|---|---|---|
+| what moves to the ME | G, the gather, whole at the copy point beside the walk (§12.3); the pill sweep's slice 1 is already there in the tock (the lab's REBUILD.md:342, line (b)) | the main CPU's drawing whole: world, objects, effects, HUD, see-through, flares (drawmain_census's parts); the AI job moves back to the main CPU (§5b's "think on the main CPU" row) |
+| its time today, main CPU, b30's fight | G **4.60 ms a timed tick** [M, `slice1_kt_b30_stamps`, new-only B at 4221d521, PSP-1000, gt 1200-1500] | the drawing **34.4 ms a frame** (objects 15.8, world 11.35, effects 3.2, HUD 2.4) [M, `drawmain_census` / `drawcensus_b30`, c5ff3114, PSP-1000]; 34.5 on killtest2's B [M, `slice1_kt_b30_read`] |
+| its ME time | **gap:** no row has run G on the ME; at the main CPU's 4.60 [U, as if equal] | **gap:** no row has run the drawing's build on the ME (no VFPU path there today); at the main CPU's 34.4 [U, as if equal] |
+| the ME's column, b30's fight | 31.54 [M, §12.1] + 4.60 = **36.1** [D], + the AI job's ~2.8 [M a job, a frame derived, `mecol_b30_ai`, 28bf69a3, PSP-3000] = **38.9** [D] | 31.54 [M, §12.1] + 34.4 = **65.9** [D]; the AI job's ~2.8 leaves (back on the main CPU) |
+| against 30 / 33.3 ms | **over** 30 by 6.1 to 8.9; over 33.3 by 2.8 to 5.6 | **over** 30 by 35.9; over 33.3 by 32.6 |
+| c20's peak | 42.85 [M, §12.1] is over 33.3 by 9.5 before anything moves; G on c20: **gap** (ktstamp ran b30 only) | 42.85 + the drawing's peak 28.2-28.4 [M, `drawmain_census`, ticks ~1619-2196, PSP-1000] = **~71.2** [D], over 33.3 by ~37.9 |
+| what it frees on the main CPU, b30's fight | G's 4.60 of B's 35.8 ms tick [M, `slice1_kt_b30_stamps`]: ~31.2 left [D], less the copy below | the drawing's 34.4 a frame; the tick (35.8) and the AI job (~2.8, as measured on the ME) stay or return: ~38.6 [D] |
+| the copy it needs | the one-tick-old world copy (tc-copy): its refresh **0.74 ms a tick** on the main CPU after K1 (B 739.8 us at gt 1200-1499) [M, `k1price_b30`, 67ab80c7, PSP-3000]; the write-back <= 0.06 ms in <= 16 KB (tc-copy 3's budget, §12.3's copy row) [D]; the pool +198 KB of BSS [`tccopy_size`] | the same one-tick-old copy for the walk to read while the next tick writes (0.74 ms [M], as left), **plus** the drawing's per-frame copy, since the ME can't see VRAM: REBUILD.md:129 calls it small [M], but **no filed row holds its size or time: gap** |
+
+**What the check asks, answered:** neither column fits the ME at b30's fight on today's figures. "Both cores simulate" is over 33.3 by 2.8 ms without the AI job and 5.6 with it (6.1-8.9 over 30), so it needs about that much off the ME's column first: §12.1's rest (7.56) and the render kinds are where it is. "One simulates, one draws" is over by 32.6 (35.9 over 30), so it can't fit without the drawing's build costing about half its main CPU time on the ME, which nothing measured says. On c20's peak both are over already (9.5 before anything moves). As §5b said on the beach, neither creates time; today's ME column has less room than §5b's b156 beach figures (24.6-27.1 there).
+
+**Named gaps, no row holds them:**
+- G's time on the ME (both maps), and G on c20's peak on the main CPU.
+- The drawing's build's time on the ME, either map.
+- The drawing's per-frame copy (VRAM to what the ME can read): size and time.
+- The AI job on c20 (as §12.1).
+- The rows are of different builds and PSP models (cc828579 PSP-1000/3000, 4221d521 PSP-1000, c5ff3114 PSP-1000, 67ab80c7 PSP-3000, 28bf69a3 PSP-3000): every sum here is [D] on them, never [M]; a whole-frame PSP pair of one build prices either column.
 
 ### 12.3 The phase plan [D] (written 2026-11-26 22:28)
 
