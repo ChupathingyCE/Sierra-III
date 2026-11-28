@@ -1240,6 +1240,10 @@ own, still current while render_model draws it): model_nodes is the
 replay's, unset on this side while the frame is recorded */
 static PSP_MAIN_SIDE const float *draw2_nodes = NULL;
 static PSP_MAIN_SIDE int draw2_node_count = 0;
+/* the frame's first window's position: ge_eye is made from it alone
+(window_begin_list returns at a later window, the frame open), while
+main_view_eye follows every window */
+static PSP_MAIN_SIDE float draw2_eye[3];
 
 static int defer_call_far(const unsigned int *sub, unsigned int bytes)
 {
@@ -6923,7 +6927,12 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 #ifdef PSP_DRAW2
 	/* FARCALL: the frame's set of far sub-lists, at its first window */
 	if (!window_main_done && !PSP_ME_WORK())
+	{
 		draw2_frame_begin();
+		draw2_eye[0] = position[0];
+		draw2_eye[1] = position[1];
+		draw2_eye[2] = position[2];
+	}
 #endif
 	/* B41: a sleep asked is carried out at a frame's first window, before
 	anything of the frame reaches the GE layer (psp_sleep.c) */
@@ -18149,8 +18158,9 @@ static void psp_ge_call_far(const unsigned int *sub, unsigned int bytes)
 
 /* FARCALL, the main CPU's side: psp_ge_draw_far's groups as GE words in this
 frame's set, from the begin's node matrices (draw2_nodes) and the eye the
-replay's window begin makes ge_eye from (main_view_eye; level_origin is the
-main CPU's). 0 when there's no room or no nodes: the caller records the old
+replay's window begin makes ge_eye from (draw2_eye, the frame's first
+window's: a later window leaves ge_eye as it was; level_origin is the main
+CPU's). 0 when there's no room or no nodes: the caller records the old
 DEFER_DRAW_FAR then */
 static int draw2_far(const void *block, unsigned int mask_low, unsigned int mask_high, const unsigned int *tints)
 {
@@ -18176,9 +18186,9 @@ static int draw2_far(const void *block, unsigned int mask_low, unsigned int mask
 	if (!words || !draw2_open(&sub, words + 1))
 		return 0;
 	for (k = 0; k < 3; k++)
-		eye[k] = !level_exact ? main_view_eye[k] :
-			level_local ? level_origin[k] + ge_matrix_float(main_view_eye[k] - level_origin[k]) :
-			ge_matrix_float(main_view_eye[k]);
+		eye[k] = !level_exact ? draw2_eye[k] :
+			level_local ? level_origin[k] + ge_matrix_float(draw2_eye[k] - level_origin[k]) :
+			ge_matrix_float(draw2_eye[k]);
 	for (at = block, group = 0; at && group < 64; group++)
 	{
 		const unsigned int *head = (const unsigned int *)at;
