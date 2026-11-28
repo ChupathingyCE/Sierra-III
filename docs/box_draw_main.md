@@ -674,6 +674,16 @@ Desk work and counts, no build or pair. Counts from farcall4 (sierra-batch 46093
 
 - **Reading: undecided, and not on the old figures.** The re-priced FARCALL is a move of the far words from the ME to the main CPU: the ME's column clears (−~1.45 to −1.64 at half); the main CPU's straddles 0, and at its top (+0.8 to +1.0) it's past A's run-to-run range (~0.8, farcall7). Taking rso's sent models adds ~0.2 ms of the ME at half for 11% of the words and a change to rso_send: the cheaper cut is walked-only. **The one number that decides it is the emit's main-CPU cost a word**, and farcall7's own logs may hold both halves, no new run: the ME's far kind A vs B (mekinds, never read: the drawing bar failed first) prices the ME's side per word moved, and the main CPU's side is the 0.062-0.23 range above. At full reach the main CPU is not up if the emit's rate is ≤ ~0.09 µs a word (0.64 / 7,100), up but inside A's ~0.8 range to ~0.2, and past it above ~0.2: the sheet clears on the ME's column at the first, is the lead's call at the second, fails at the third.
 - **Run order (the lead's 21:57 ask):** the runner can't order A B B A today: `sierra-hw.yml` runs every repeat through the slots in one order (lines 313-322, A B A B). A B B A is a small change there (the slot list reversed on even repeats); with repeat=2 it cancels a linear climb like farcall7's ~0.8 ms.
+- **The deciding read: the ME's side from farcall7's logs [M, sierra-hw 46101761198, PSP-1000, 8ae08e9e; the builder, 2026-11-27 22:2x].** mekinds' fight block (gt ~1085-1790, 300 frames; the window 1098-1720 lies inside it), `toolbox/mekindsgt.py`:
+
+  | run | side | far level, µs a frame | records a frame | µs each | far level's call | ME all |
+  |---|---|---:|---:|---:|---:|---:|
+  | 1 | A | 3090 | 94.5 | 32.7 | none | 31809 |
+  | 2 | B | 3111 | 85.0 | 36.6 | 125 (9.9 a frame) | 32255 |
+  | 3 | A | 3123 | 95.0 | 32.9 | none | 32613 |
+  | 4 | B | 3080 | 84.2 | 36.6 | 125 (9.9 a frame) | 32450 |
+
+  B takes ~10 records a frame off the ME, as many as draw2's sub-lists (9.9 a frame), but the records left cost 3.8 µs more each, so **the far kind doesn't move: B−A −0.01 ms whole, +0.11 with B's CALLs; ME all +0.14** (inside A's 0.8 range). **Per word moved, ~0 µs** (≤ 3,072 words a frame). The reach-scaled saving those 10 records should have given at A's rate is −0.33 whole: it isn't there. **So the ME column (−1.45 to −1.64 at half) is struck:** the ME's far time doesn't scale with the words or records moved [M], and why is [U] (the bigger models left, or the ME's time is in the bake's reads, not the words). **Main CPU:** the logs carry no drawsplit lines (B's build has no PSP_DRAWSPLIT), so its side stays the drawing B−A +0.5 on both pairs, run order unweighed. **Reading: FARCALL clears on neither column; it stays stopped (row `farcall7_b30`).** revive_if gains: a pair that shows the ME's far kind falling with the records moved.
 
 ### 4.4 The asks §3 names, gathered [D, for the lead's take with §1-§4]
 
