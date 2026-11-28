@@ -32,4 +32,32 @@ void psp_kt_pass(void);
 void psp_kt_owed(void *site, unsigned long mark);
 unsigned long psp_kt_tick(unsigned long scale);
 
+#ifdef PSP_S1COUNT
+/* slice 1's count ("s1count", PSP_S1COUNT=1 on top of PSP_KTSTAMP=1; the lab's briefs/s1_count.md): per biped
+tag (living, dead, rider) per class per stage (I, G, M as the pass's stage edges), the sum of what PSP_S1_ADD is
+given (cycles read with psp_kt_clock, or for a count class the count) and its calls, on ktstamp's timed ticks
+only, printed as one s1count line after ktstamp's window line. Keep word s1count, with ktstamp's */
+enum { PSP_S1_LIVING, PSP_S1_DEAD, PSP_S1_RIDER, PSP_S1_TAGS };
+enum { PSP_S1_STAGE_I, PSP_S1_STAGE_G, PSP_S1_STAGE_M, PSP_S1_STAGES };
+enum
+{
+	PSP_S1_A,             /* (a) an intent tick whose inputs are bit-equal to last tick's (s1c-a) */
+	PSP_S1_B,             /* (b) a translate whose target is bit-equal, its cluster set unchanged (s1c-a) */
+	PSP_S1_C_OWN,         /* (c) a pose compute whose first reader is the object's own update (s1c-c) */
+	PSP_S1_C_ATTACH,      /* ... an attachment */
+	PSP_S1_C_OTHER,       /* ... another object */
+	PSP_S1_C_DRAW,        /* ... drawing */
+	PSP_S1_C_NONE,        /* ... none */
+	PSP_S1_C_HELD,        /* ... attached or root-animated (the held weapon, the root): marked, never none */
+	PSP_S1_D_MET,         /* (d) the gather's objects met (a count; s1c-d) */
+	PSP_S1_D_PASSED,      /* ... objects passed (a count) */
+	PSP_S1_D_FEATURES,    /* ... contributing features (a count) */
+	PSP_S1_D_UNPASSED,    /* ... cycles on the met-but-not-passing */
+	PSP_S1_CLASSES
+};
+extern int psp_s1_on;             /* ktstamp's timed tick, keep word s1count on */
+void psp_s1_tag(int tag);
+void psp_s1_add(int klass, int stage, unsigned long cycles);
+#endif
+
 #endif

@@ -51,3 +51,12 @@ One line every 300 ticks, `ktstamp: ms a tick (calls a tick): pass x (n); I ...;
 ## Ask A, from the same hooks
 
 Ask A (emulator, nmreaders census on new-only, both seeds) needs owed settles by site, and nmreaders counts first reads by class and site, not whether a read found work owed. Under `ktstamp` the `owed` hook also counts its calls by caller site (12 slots, as psp_nmr_site), so A runs on the stamped B build with keep words `nmreaders ktstamp`: one build serves both asks. Open, to check at the fixed-up form before A is asked: whether new-only's eager compute still reaches psp_nmr_computed (psp_fixups.py 23622-23631, 31223-31232 are objects.c's compute) so nmreaders' classes are filled on new-only, and the owed makes (store_pose_make_skipped) are not counted as computes there.
+
+## s1count: slice 1's count, on ktstamp's clock
+
+_The builder, 2026-11-28 01:1x, the lab's briefs/s1_count.md task 1 (task s1c-hdr: the frame; the class marks are s1c-a, -c and -d)._ `PSP_S1COUNT=1` with `PSP_KTSTAMP=1` (alone, psp_build.py and psp_fixups.py refuse it), keep word `s1count` beside `ktstamp`. The hooks are psp_post.h's, beside PSP_KT_*:
+
+- `PSP_S1_TAG(biped)`: the biped the next adds are for: dead (`_object_dead_bit`, as store_biped_at) first, then a rider (`parent_object_index` set), else living. Any datum with an object header.
+- `PSP_S1_ADD(class, stage, cycles)`: sums `cycles` (a difference of `psp_kt_clock()` reads, or for a count class its count) and a call into the tag's cell for the class (psp_ktstamp.h: a, b, c's six readers, d's met, passed and features counts and its unpassed cycles) and stage (I, G, M: the pass's stage edges 1-2, 2-3, 3-4).
+
+Both act only on ktstamp's timed ticks (`psp_s1_on`) and never on the ME, so a share of the pass reads against ktstamp's own sums over the same ticks. After each window's ktstamp lines, one `s1count: gt <from>-<to>, <timed> timed, <tag> <stage>: class sum/calls: ...` line per tag (L, D, R) and stage with a call (the log's line is 512 bytes; 12 cells fit one), or `s1count: ... none`. Off, no define: the hooks are `((void)0)` with their arguments unevaluated; on or off, the fixups cut no engine text for the frame.

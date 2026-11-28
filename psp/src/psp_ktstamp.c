@@ -70,6 +70,56 @@ void psp_kt_owed(void *site, unsigned long mark)
 	kt_site_calls[k]++;
 }
 
+#ifdef PSP_S1COUNT
+/* slice 1's count (psp_ktstamp.h's s1count): sums and calls by tag, class and stage, a window's */
+int psp_s1_on = 0;
+static int s1_keep = -1, s1_tag = PSP_S1_LIVING;
+static unsigned long s1_sum[PSP_S1_TAGS][PSP_S1_CLASSES][PSP_S1_STAGES];
+static unsigned long s1_calls[PSP_S1_TAGS][PSP_S1_CLASSES][PSP_S1_STAGES];
+static const char s1_tags[PSP_S1_TAGS] = {'L', 'D', 'R'}, s1_stages[PSP_S1_STAGES] = {'I', 'G', 'M'};
+static const char *const s1_classes[PSP_S1_CLASSES] = {"a", "b", "c_own", "c_attach", "c_other", "c_draw", "c_none",
+	"c_held", "d_met", "d_passed", "d_features", "d_unpassed"};
+
+void psp_s1_tag(int tag)
+{
+	s1_tag = tag >= 0 && tag < PSP_S1_TAGS ? tag : PSP_S1_LIVING;
+}
+
+void psp_s1_add(int klass, int stage, unsigned long cycles)
+{
+	if (klass < 0 || klass >= PSP_S1_CLASSES || stage < 0 || stage >= PSP_S1_STAGES)
+		return;
+	s1_sum[s1_tag][klass][stage] += cycles;
+	s1_calls[s1_tag][klass][stage]++;
+}
+
+/* after ktstamp's lines: a line for each tag and stage with a call (platform_psp_log's line is 512 bytes, and 12
+cells fit one), each cell class sum/calls, the sums over the window's timed ticks (ktstamp's line counts them; L
+living, D dead, R rider); a window with no call says none */
+static void s1_report(long from)
+{
+	char line[440];
+	int at, t, c, s, lines = 0;
+
+	for (t = 0; t < PSP_S1_TAGS; t++)
+		for (s = 0; s < PSP_S1_STAGES; s++)
+		{
+			at = 0;
+			for (c = 0; c < PSP_S1_CLASSES && at < (int)sizeof(line); c++)
+				if (s1_calls[t][c][s])
+					at += snprintf(line + at, sizeof(line) - at, " %s %lu/%lu", s1_classes[c], s1_sum[t][c][s],
+						s1_calls[t][c][s]);
+			if (!at)
+				continue;
+			platform_psp_log("s1count: gt %ld-%ld, %lu timed, %c %c: class sum/calls:%s", from, from + 300, kt_timed,
+				s1_tags[t], s1_stages[s], line);
+			lines++;
+		}
+	if (!lines)
+		platform_psp_log("s1count: gt %ld-%ld, %lu timed: none", from, from + 300, kt_timed);
+}
+#endif
+
 static void kt_report(long from)
 {
 	char line[640], sites[400];
@@ -97,6 +147,10 @@ static void kt_report(long from)
 		platform_psp_log("ktstamp: owed makes, every tick: %lu (%lu.%02lu a tick); by caller site (the last slot takes the rest):%s",
 			kt_owed_all, kt_owed_all / ticks, kt_owed_all * 100 / ticks % 100, sites);
 	}
+#ifdef PSP_S1COUNT
+	if (s1_keep > 0)
+		s1_report(from);
+#endif
 }
 
 /* psp_object_sample's tick (psp_platform.c): this tick's scale passes through; the window's report when game time
@@ -112,9 +166,17 @@ unsigned long psp_kt_tick(unsigned long scale)
 		kt_keep = psp_keep("ktstamp") != 0;
 		if (kt_keep)
 			platform_psp_log("ktstamp: on (docs/ktstamp.md): the biped stages' clock on psp_object_sample's timed ticks, a line a 300-tick window");
+#ifdef PSP_S1COUNT
+		s1_keep = kt_keep && psp_keep("s1count") != 0;
+		if (s1_keep)
+			platform_psp_log("s1count: on (docs/ktstamp.md): slice 1's classes by tag and stage on ktstamp's timed ticks, a line after each of its windows");
+#endif
 	}
 	psp_kt_count = kt_keep;
 	psp_kt_on = kt_keep && scale != 0;
+#ifdef PSP_S1COUNT
+	psp_s1_on = s1_keep > 0 && psp_kt_on;
+#endif
 	if (!kt_keep)
 		return scale;
 	window = game_time_get() / 300;
@@ -126,6 +188,10 @@ unsigned long psp_kt_tick(unsigned long scale)
 		memset(kt_calls, 0, sizeof(kt_calls));
 		memset(kt_site, 0, sizeof(kt_site));
 		memset(kt_site_calls, 0, sizeof(kt_site_calls));
+#ifdef PSP_S1COUNT
+		memset(s1_sum, 0, sizeof(s1_sum));
+		memset(s1_calls, 0, sizeof(s1_calls));
+#endif
 		kt_owed_all = kt_ticks = kt_timed = 0;
 		kt_window = window;
 	}

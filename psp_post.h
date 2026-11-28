@@ -168,6 +168,20 @@ through, and a make's mark is a plain 0 the compiler drops */
 #define PSP_KT_TICK(scale) (scale)
 #endif
 
+/* "s1count" (PSP_S1COUNT=1, with PSP_KTSTAMP=1; docs/ktstamp.md's s1count): slice 1's count, log only. PSP_S1_TAG
+names the biped the next adds are for (dead first, then a rider, else living; any datum with an object header);
+PSP_S1_ADD sums cycles (or a count class's count) by class and stage, on ktstamp's timed ticks, never on the ME.
+Compiled out otherwise: nothing, and the arguments unevaluated */
+#ifdef PSP_S1COUNT
+#define PSP_S1_WHO(biped) (TEST_FLAG((biped)->object.damage_flags, _object_dead_bit) ? PSP_S1_DEAD : \
+	(biped)->object.parent_object_index != NONE ? PSP_S1_RIDER : PSP_S1_LIVING)
+#define PSP_S1_TAG(biped) (psp_s1_on && !psp_work_on_me() ? psp_s1_tag(PSP_S1_WHO(biped)) : (void)0)
+#define PSP_S1_ADD(klass, stage, cycles) (psp_s1_on && !psp_work_on_me() ? psp_s1_add((klass), (stage), (cycles)) : (void)0)
+#else
+#define PSP_S1_TAG(biped) ((void)0)
+#define PSP_S1_ADD(klass, stage, cycles) ((void)0)
+#endif
+
 /* datum fields the port reads from files that can't see their structures: units.c makes them from the structures (psp_fixups.py), so they move with a datum's layout */
 extern const long psp_datum_unit_timer, psp_datum_item_owned, psp_datum_biped_bytes;
 /* the datum's visit stamp (object.magic_number), which the sleep's sums and checks pass over */

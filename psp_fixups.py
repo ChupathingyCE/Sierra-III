@@ -68978,6 +68978,16 @@ def ktstamp_cut(tree):
     return len(made)
 ktstamp_cut(TREE)
 
+# PSP_S1COUNT=1 (slice 1's count, log only; the lab's briefs/s1_count.md; keep word s1count, read with ktstamp's):
+# the frame is psp/src's own (psp_post.h's PSP_S1_* hooks, psp_ktstamp.c's sums and its line), so this step cuts no
+# engine text; it runs on ktstamp's clock and window, so only with PSP_KTSTAMP=1 (psp_build.py refuses it too)
+S1COUNT = os.environ.get("PSP_S1COUNT", "") == "1"
+if S1COUNT:
+    if not KTSTAMP:
+        check_fail("psp_fixups: S1COUNT: needs PSP_KTSTAMP=1 (ktstamp's clock and window)")
+    else:
+        print("psp_fixups: S1COUNT: slice 1's count frame (keep word s1count with ktstamp): no engine text cut")
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
