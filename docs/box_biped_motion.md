@@ -301,6 +301,20 @@ The engine's `biped_update` and `unit_update` (the motion half), `biped_update_p
 
 **Upstream manifest:** the biped, unit and collision functions and their tags at the pin after the rebase (REBUILD §5b).
 
+## Scratchpad slot
+
+_sp-plan (1) (Sheepdog01 2026-11-27 02:1x: "Each box's page states its scratchpad budget, the way it states heap and eDRAM"). The builder, 2026-11-28 04:2x, on paper; file:line at cc828579; sized on this page's staged design (§1c, §3b), built only under `PSP_BIPEDSTAGE=1`. Nothing is claimed as a gain; the PSP prices it, whole frame. Posing's and collision's slots are their own pages'._
+
+- **Passes:** the intent and the solve (§3b, the update cut at the move's call), main CPU. The gather between them is the collision query's.
+- **Loads / drops:** each of the two passes takes the slot at its start, loads one biped's record, writes it back and loads the next; it drops the slot at its end. Nothing stays across the gather.
+- **Holds, one biped at a time** [D]:
+  - the store's five sections, 404 B: read 108, unit 168, posing 36, walk 24, control 68 (`psp/src/box_world_store.h:48,96,110,120,141`); 540 B with the fields biped motion added (`docs/box_biped_motion.md:99`);
+  - the intent-to-solve record, ~260 B (`docs/box_biped_motion.md:230`; `struct psp_bs3_record`, `psp_fixups.py:55588-55599`).
+- **Slot:** **~800 B** (540 + ~260) [D]. It fits the 6,656 B held (`psp/src/psp_scratch.c:365`).
+- **Left in RAM:** all the kept records (64 slots x 540 B = 34.5 KB, `docs/box_biped_motion.md:110`; the 64 at `psp/src/box_world_store.c:46`) are more than the whole 16 KB (`psp_scratch.c:42`). So is the gathered lists' arena, 32,768 B (`psp_fixups.py:55062`).
+- **Open for the ranking:** one biped's own gathered list, for the solve. Its size is known only as an emulator count (§3b), so it has no [D] bytes and is not in the slot. The level BSP's top nodes the gather walks are already resident (`psp_scratch.c:393`): counted there, not here. No misses-per-byte count is given here.
+- **What must change:** the allocator hands out fixed pieces at start-up, never shared in time (`psp_scratch.c:15-17`).
+
 ## 7. Proof
 
 Alone, against a capture of a pad bench (one of Sheepdog01's recordings): per biped update, its inputs (the store's sections, the control record, its near objects' bounds and the level) and the engine's outputs (the unit section, the relink); the box's outputs compared with the engine's (the serial form to the last bits, which keeps statecrc as its cheap proof; the parallel form within a tolerance set far under the host's 3.5 units, its proof the side-by-sides and census). Then in the frame: play and both seeds in the serial form; play and the outcome census in the parallel form.

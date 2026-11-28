@@ -578,3 +578,18 @@ The distinction the box needs is whether a GE block can be kept and replayed whi
 6. **What `nohud` actually removes.** The keep word exists but only at `hud_render_weapon_interface`'s door (`psp_fixups.py:4902`, `PSP_KEEP_ONCE("nohud")` → `return`), so no existing A/B prices the whole HUD or the sensor; a `nohud`-style word in `hud_draw_screen` and a `noblips` word in `motion_sensor_draw_screen` would give the frame-level price of each, and are the cheapest way to check §1's figures against the frame (2 runs, one keep word each).
 
 **Unfinished in this draft.** The b40/a30 columns of §1 and the weighted-by-frames means are owed (I used unweighted window means and said so); §2's µs-a-blip arithmetic is mine on the lab's two counters and should be re-derived by the audit; §4's ceiling is an upper bound, not a price.
+
+## Scratchpad slot
+
+_sp-plan (1) (Sheepdog01 2026-11-27 02:1x: "Each box's page states its scratchpad budget, the way it states heap and eDRAM"). The builder, 2026-11-28 04:2x, on paper; file:line at cc828579; sized on this page's design (§10.2: the record is RSO's entry, widened) with RSO's structures as built. Nothing is built or claimed as a gain; the PSP prices it, whole frame. The HUD (§14) isn't covered._
+
+- **Pass:** the frame-list build: the main CPU's walk of the frame's visible objects, each sent again from its kept records or walked and kept. The ME's replay has no slot: it can't see the scratchpad.
+- **Loads / drops:** at the walk's start the slot tables are copied in; at its end they're written back (new entries and compaction change them) and the slot is dropped.
+- **Holds** [D, `psp/src/psp_ge.c`]:
+  - RSO's slot tables, `rso_slot_entry` and `rso_slot_object`, 512 x 4 B each = **4,096 B** (`:14440`, `:14468-14469`);
+  - the camera-faded reflections of the walk being kept, `rso_cap_fade`, 8 x 3 floats = 96 B (`:14444`, `:14474`);
+  - its parts' buffers, `rso_cap_buffers`, 32 x 2 pointers = 256 B (`:14441`, `:14478`).
+- **Slot: 4,448 B** [D]. It fits the 6,656 B held (`psp/src/psp_scratch.c:365`).
+- **Left in RAM:** RSO's pool, 48 KB (`psp_ge.c:14438`), more than the whole 16 KB; an entry has no fixed size, and §2's record has fields but no byte layout yet, so neither is in the slot. The records the walk writes for the ME stay in main RAM.
+- **Open for the ranking:** the tables' copy-in is 64 lines a frame against the lines its lookups would miss; neither is counted here. No misses-per-byte count is given here.
+- **What must change:** the allocator hands out fixed pieces at start-up, never shared in time (`psp_scratch.c:15-17`).

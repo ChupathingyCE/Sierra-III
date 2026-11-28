@@ -146,3 +146,31 @@ Existing lines read with it: `ME: batch timing (claims)` (**the batch's pickup l
 All eight runs exited cleanly. The slice wins about 1 ms of frame on b30's flight. On c20 it's a wash: ~0.2 ms moves from the drawing into the tick on the opening, and the frame is unchanged. Whether that switches on the sweep's placement (sweepme slice 1) is the lead's call.
 
 **Switched on (the lead, 2026-11-20 00:1x):** slice 1 is on by default in the tock with the sweep's slice 1 (keep word `ticksched`, off: `tickschedoff`; Sierra-III builder/tock-sweep). **A known cost, kept:** each pick-up point costs the replay +0.3–0.5 ms a job on the ME. That's the ME's floor for now, not a reason to hold the placement. Slice 2 (the AI job's looks) is next.
+
+## Scratchpad slots
+
+_sp-plan (1) (Sheepdog01 2026-11-27 02:1x: "Each box's page states its scratchpad budget, the way it states heap and eDRAM"). The builder, 2026-11-28 04:2x, on paper; file:line at cc828579. **The passes are the two-core tick's design, parked (tc-tick), not code in this tree:** §12.3's phase plan on `builder2/ticktwo` 0e675a66, one tick a frame. Nothing is built or claimed as a gain; the PSP prices it, whole frame._
+
+**The room** [D]: 16,384 B (`psp/src/psp_scratch.c:42`). The level BSP's top nodes stay resident, 304 x 32 = **9,728 B** (`psp_scratch.c:392`, `psp/include/psp_scratchbsp.h:21-27`). A main-CPU pass's slot is at most the **6,656 B** held (`psp_scratch.c:365`; "profscratch" puts the profiler there, leaving none). One main-CPU pass runs at a time, so the slots share those bytes in time. The ME can't see the scratchpad (`psp_scratch.c:3-4`: it is the main CPU's).
+
+A slot is loaded at its pass's start and dropped at its end. "None" means no working set has been chosen for the pass, not that it has none.
+
+| Pass (§12.3) | Core | Slot, B [D] | What is in it; source at cc828579 |
+|---|---|---|---|
+| H0 the fence | main | none | one count's check |
+| H1 `ai_update` | main | none | no structure chosen |
+| H2 players, effects, scripts | main | none | |
+| H3 activation | main | none | |
+| H4 the copy point and the post | main | none | its writes are for the ME to read (box_world_store.md, tc-copy §3 on `builder2/storecopy`) |
+| P1 the walk (non-bipeds) | main | none | no structure chosen |
+| P2 the units part | main | none | |
+| P2 I, the bipeds' intent [U: §12.3's I read as biped motion's intent] | main | **~800** | one biped at a time: the store sections and added fields, 540 (`docs/box_biped_motion.md:99`; `psp/src/box_world_store.h:48,96,110,120,141`), and the intent-to-solve record, ~260 (`box_biped_motion.md:230`; `psp_fixups.py:55588-55599`) |
+| J the join | main | none | spins on uncached done words |
+| G's fallback (late or not-held bipeds) | main | **5,400** | one query's sphere result (`psp/src/box_collbsp.h:76-97`, `:17`; box_collision.md on `builder2/sp1b`) |
+| S1 M: the take, the sweep, the relink | main | **~800** | P2 I's record, loaded again for each biped's solve (same sources) |
+| S2 after M (new objects, deletes, pose-ahead, GC) | main | none | posing's slot is on box_posing.md (`builder2/sp1a`); this plan names no posing pass to carry it [U] |
+| G, the sweep's job | ME | 0 | `psp_scratch.c:3-4` |
+| Part A's think, if posted | ME | 0 | the same |
+| This page's other ME work (the replay, batch, visibility and AI jobs, §1) | ME | 0 | the same |
+
+**Peak** [D]: G's fallback, 9,728 + 5,400 = 15,128 B of 16,384. The slots are worked from struct fields and the design pages, not a measured sizeof. **What must change:** the allocator hands out fixed pieces at start-up and never shares them in time (`psp_scratch.c:15-17`).

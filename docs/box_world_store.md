@@ -202,3 +202,7 @@ The lead's order of 2026-11-19 11:5xZ: after bm1c-held and msb-held (the record 
   - **each collision model's live nodes' matrices** (the nodes that reach a BSP: the lab's `collnodes1_collision_node_sets`), refreshed where node matrices are made (`object_compute_node_matrices_with`, `psp_nms_make`, both already marks). Its size is from that census, not guessed: open.
 - **When the ME reads it:** the copy is taken as the walk begins and nothing writes it until the next tick's walk, so slice 2's records can be handed as early as the intents end (as slice 1's are) or earlier, with the main CPU writing datums meanwhile, no lock (§9's rule).
 - **Its proof** (slice 2, not exact): the outcome census and play side-by-sides on b30_leg2, c20_leg2 and d20_play1 against the build with `sweepme` off; the copy's reach at the sweep (§9: 0.11-6.72% of visits part, almost all spheres of objects already updated in the tick) is where play can part.
+
+## Scratchpad slot
+
+The copy's hand-over has **none**: 0 B on the main CPU (what the refresh writes the ME reads, and what it reads it reads once). The case is tc-copy's §3, "The cache-fit budget", on Sierra-III `builder2/storecopy` (2e38f989), not yet in this branch's copy of this page.
