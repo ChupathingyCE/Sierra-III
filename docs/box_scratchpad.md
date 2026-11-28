@@ -121,3 +121,36 @@ _The builder, 2026-11-28 04:2x. The slots are the five pages' "Scratchpad slot" 
 - the allocator learns to share the held room in time. Today it hands out fixed pieces at start-up (`psp_scratch.c:15-17`).
 
 Queries from inside object updates have no pass and no slot (box_collision.md).
+
+## 3. Each slot's candidates, by misses saved per byte (sp-plan (3)-(4), paper)
+
+_The builder, 2026-11-28 04:3x. Counts are emulator counts [E]: leads, never prices. Nothing is called a gain. Spare is 0 B (§2), so nothing is sized into a spare._
+
+**The one count per byte that is measured on the scratchpad itself** (resident, not a slot): SCRATCHBSP's nodes, ~1,346 tick D-misses a tick on b30 for 9,728 B = **0.14 a tick per byte** [E: the cache pair, run 40770037236].
+
+**Ranking.** "No count": no emulator count of that structure's misses was found on the box pages, in `cache_work.md` or in the lever rows.
+
+| Slot (§2 rows) | Rank, candidate, bytes | Misses saved per byte | Earlier try (below) |
+|---|---|---|---|
+| collision, G's fallback (6) | 1. `psp_surfaces_seen`, today's walk's dedup marks, 3,072 [D, `psp_fixups.py:17782,17805-17812`] | **≤ 0.085 a tick** [E: ~260 misses a tick, b30 to 170 s, the cache model on w140's build, `cache_work.md` §3; no run id there]. Whole tick, every asker, so a ceiling for one pass | SPX, QMARK |
+| | unranked: the box's sphere result, 5,400 (§2's slot) | no count | SPX, QMARK |
+| biped motion (3, 7) | unranked: the store sections, 540; the intent-to-solve record, ~260 | no count | SPX |
+| | unranked: one biped's gathered list, solve only; average 237 on b30, 163 on c20 [E: run 44217799752], largest 14,200 | no count | SPX |
+| posing (4) | unranked: decoded orientations, 832-2,048; the plan, 192; the parent's matrix, 52; §9's decode plan, median 2.8-3.2 KB | no count (`box_posing_pose_ref`'s 1,036-1,289 D-misses a tick [E: `fpass2_own_pair_by_subsystem`] aren't split by structure) | SPX |
+| draw list (9) | unranked: RSO's slot tables, 4,096; the faded reflections, 96; the parts' buffers, 256 | no count | SPX |
+| tick H0-H4, P1, P2, J, S2; the rest of the drawing (1, 2, 5, 8, 10) | no candidate chosen | no count | |
+
+- `psp_surfaces_seen` doesn't fit beside collision's 5,400 B slot (8,472 > 6,656 held), and it is today's walk's table, not the box design's.
+- Other per-structure counts from the same base (`psp_sphere_memo` ~290, `ai_profile` ~260 a tick [E]) belong to no slot here; the sphere memo is off by default (`review_smemooff.md`).
+
+**Earlier tries** (`toolbox/levercheck.py`, the lab, 2026-11-28; "none" = no revive_if on the row):
+
+- **SCRATCHBSP:** "on by default"; PSP-3000 pair 40775509445: exact, small win (b30 tick -0.3 ms on the cinematic and flight [M]). revive_if: none.
+- **CSTPOOL:** "closed: null on the PSP-1000". revive_if: "the pool's 2.6 KB table going cold on the PSP; the PSP-1000 pair was in the noise (tick 46.2 vs 46.4 cinematic)".
+- **CODESPAD:** "REJECTED [M]" (code run from the scratchpad). revive_if: "the scratchpad's uncached view running near cached speed; it costs 14.3 cycles an instruction against ~4.5 for a missing line".
+- **SPX** (tables shared in time): "sized: not free": psp_surfaces_seen 3 KB, psp_sphere_memo 7 KB, ai_profile 3.8 KB, ~3.6M of 200M tick D-misses; "swapping 15 KB in and out each tick costs about as much [U]". revive_if: none. Every slot here is this form, so each owes its copy-in and write-back against what it saves.
+- **SPADG** (hot globals): "HARDER THAN ITS COUNT". revive_if: "a count showing most of the small-data area's hot lines are read by the main CPU only, or the ME's jobs given a small-data copy of their own (under S)".
+- **SPSTACK** (hot stack): "BEHIND STK'S ROUTE". revive_if: "the fat frames gone (STK) and a hot top that fits 4 KB left; scratchpad room freed (the profiler's 6.6 KB in play builds)". That room is now freed (§1.1); the slots above claim it.
+- **QMARK** (query-local object marks, 256 B): "PROPOSED 2026-11-16 ... Unbuilt, unsized on the PSP"; its "spare ~0.9 KB" no longer exists (§2). revive_if: none.
+
+**What would rank the rest:** a count of D-misses by structure inside each pass, over the box's own structures. Today's counts are by function or by whole-tick structure, and the boxes' passes aren't all built.
