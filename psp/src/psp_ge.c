@@ -1585,6 +1585,13 @@ struct replay_kind_times
 	audio slot can wait on the frame's job (B62) */
 	unsigned int worst[2][REPLAY_KINDS];
 	unsigned int runs[2];
+	/* mc-1b: each kind's sum this frame and the largest frame's sum since
+	the last report, folded at the frame's end (replay_kinds_fold); folds[]
+	counts the frame ends each side was folded at (the ME's only while no
+	frame is out with it, so one of its sums can span frame ends) */
+	unsigned int frame[2][REPLAY_KINDS];
+	unsigned int peak[2][REPLAY_KINDS];
+	unsigned int folds[2];
 } __attribute__((aligned(64))); /* a line of its own: the ME writes it while the main CPU runs on */
 static struct replay_kind_times replay_kinds;
 static const char *const replay_kind_names[REPLAY_KINDS] =
@@ -1628,9 +1635,29 @@ static inline void replay_kinds_add(int side, int kind, unsigned int *mark)
 	unsigned int now = replay_clock(side), spent = now - *mark;
 
 	replay_kinds.ticks[side][kind] += spent;
+	replay_kinds.frame[side][kind] += spent;
 	if (spent > replay_kinds.worst[side][kind])
 		replay_kinds.worst[side][kind] = spent;
 	*mark = now;
+}
+
+/* mc-1b: the frame's end, on the main CPU: each kind's frame sum into its
+peak, then zeroed. The ME's side only while no frame is out with it (it
+writes those sums); else they carry into the next frame end */
+static void replay_kinds_fold(int me_out)
+{
+	int side, k;
+
+	for (side = 0; side < (me_out ? 1 : 2); side++)
+	{
+		for (k = 0; k < REPLAY_KINDS; k++)
+		{
+			if (replay_kinds.frame[side][k] > replay_kinds.peak[side][k])
+				replay_kinds.peak[side][k] = replay_kinds.frame[side][k];
+			replay_kinds.frame[side][k] = 0;
+		}
+		replay_kinds.folds[side]++;
+	}
 }
 
 static void me_memo_keeps(void);
@@ -1906,8 +1933,8 @@ static void replay_kinds_report(unsigned int frames)
 		}
 		for (k = 0; k < REPLAY_KINDS; k++)
 			all += replay_kinds.ticks[side][k];
-		length = snprintf(line, sizeof(line), "GE: mekinds, %s, us a frame over %u frames (%.2f runs a frame): all %.0f;",
-			who, frames, (float)replay_kinds.runs[side] / frames, (float)all / rate / frames);
+		length = snprintf(line, sizeof(line), "GE: mekinds, %s, us a frame over %u frames (%.2f runs a frame; peaks over %u frame ends): all %.0f;",
+			who, frames, (float)replay_kinds.runs[side] / frames, replay_kinds.folds[side], (float)all / rate / frames);
 		memset(shown, 0, sizeof(shown));
 		for (;;)
 		{
@@ -1924,11 +1951,13 @@ static void replay_kinds_report(unsigned int frames)
 			us = (float)replay_kinds.ticks[side][best] / rate;
 			if (us / frames < 1.0f)
 				break; /* the rest are under a microsecond a frame */
+			/* mc-1b: peak, the largest one frame's sum, beside the mean */
 			size = replay_kinds.records[side][best] ?
-				snprintf(entry, sizeof(entry), " %s %.0f (%.1f a frame, %.1f us each, worst %.0f);", replay_kind_names[best] ? replay_kind_names[best] : "?",
-					us / frames, (float)replay_kinds.records[side][best] / frames, us / replay_kinds.records[side][best],
-					(float)replay_kinds.worst[side][best] / rate) :
-				snprintf(entry, sizeof(entry), " %s %.0f;", replay_kind_names[best], us / frames);
+				snprintf(entry, sizeof(entry), " %s %.0f peak %.0f (%.1f a frame, %.1f us each, worst %.0f);", replay_kind_names[best] ? replay_kind_names[best] : "?",
+					us / frames, (float)replay_kinds.peak[side][best] / rate, (float)replay_kinds.records[side][best] / frames,
+					us / replay_kinds.records[side][best], (float)replay_kinds.worst[side][best] / rate) :
+				snprintf(entry, sizeof(entry), " %s %.0f peak %.0f;", replay_kind_names[best], us / frames,
+					(float)replay_kinds.peak[side][best] / rate);
 			if (size >= (int)sizeof(entry))
 				size = sizeof(entry) - 1;
 			if (length + size >= (int)sizeof(line))
@@ -26884,6 +26913,8 @@ static void frame_end_show(void)
 		frame_end_us[2] += sceKernelGetSystemTimeLow() - mark;
 		win_after_us += sceKernelGetSystemTimeLow() - mark;
 	}
+	if (replay_kinds_on)
+		replay_kinds_fold(inflight_me_out); /* mc-1b: the frame's boundary for mekinds' peaks */
 	if (++frames == 1 || frames % 300 == 0)
 	{
 		platform_log("GE: sky drawn %lu times, %lu solid parts; %lu see-through draws, %lu dropped; %lu sprites; %lu HUD quads, %lu characters, %lu blips; skinned parts %lu (%lu batches, %lu KB, %lu left rigid); level see-through %lu; decals %lu; flashes %lu; shadows %lu begun, %lu requests, %lu draws; light draws %lu (%lu with a projected cone, %lu triangles outside cones skipped, %lu split near the light, %lu pieces added); bending triangles cut at the near plane %lu (%lu pieces); two-sided parts %lu; models at the near plane %lu (%lu triangles left out)",
