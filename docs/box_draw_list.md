@@ -650,7 +650,7 @@ Builder, 2026-11-28 04:4x, desk, no run; builder2, 05:2x, the ruling applied. ms
 - **Served inside the replay: per shown frame, driven by neither the audio period nor the tick.** The look runs after replay records (`psp_ge.c:1705-1718`); it mixes a block only if one waits and drains the ring's pushed jobs (`psp_me.c:1897-1954`). Job bodies it runs are netted as in-both (`psp_me.c:981-982`, `:1701-1702`); what is left is the looks, the drain's own cost and the batches made first, which call `batch_job` directly (`psp_me.c:1864-1894`): render work.
 - **Audio's line, as ranked** (the lead, `decisions.md` 2026-11-28 06:5x, lead-20261128-064905-3afe): served is per shown frame, so it goes in unscaled. The audio job alone at its per-period total over 30 (4.2 b30, 3.5 c20) plus served net of in-both x 1/1 (4.2, 3.3) = **8.4 / 6.8 [D]**, over its 4 by 4.4 / 2.8: rank 2 on b30, 5 on c20.
 
-Task 3's first two cases are audio and level draws; model parts (4.4) are next if either stops at its bar (`decisions.md` 2026-11-28 05:1x). On the restated job lines the audio job alone is at about its 4 (`decisions.md` 2026-11-28 05:5x).
+Task 3's first two cases are audio and level draws; model parts (4.4) are next if either stops at its bar (`decisions.md` 2026-11-28 05:1x). Audio's case starts only after a split puts served's `batch_job` batches (`psp_me.c:1864-1894`) with render and leaves audio's own (`decisions.md` 2026-11-28 06:5x (2)). On the restated job lines the audio job alone is at about its 4 (`decisions.md` 2026-11-28 05:5x).
 
 **Against ME busy** (62.1 ms a shown frame on b30, 57.7 on c20; the nesting is not added):
 
