@@ -1594,6 +1594,11 @@ struct replay_kind_times
 	unsigned int frame[2][REPLAY_KINDS];
 	unsigned int peak[2][REPLAY_KINDS];
 	unsigned int folds[2];
+	/* mc-4b: the ME's level draws by part (level_split): cycles by part,
+	the draws that reached the first mark, and the part open now (its number,
+	0 none) with its start */
+	unsigned long long level_ticks[5];
+	unsigned int level_calls, level_part, level_mark;
 } __attribute__((aligned(64))); /* a line of its own: the ME writes it while the main CPU runs on */
 static struct replay_kind_times replay_kinds;
 static const char *const replay_kind_names[REPLAY_KINDS] =
@@ -1641,6 +1646,25 @@ static inline void replay_kinds_add(int side, int kind, unsigned int *mark)
 	if (spent > replay_kinds.worst[side][kind])
 		replay_kinds.worst[side][kind] = spent;
 	*mark = now;
+}
+
+/* mc-4b (price:level-split), log only: on the ME under mekinds, the open part
+of psp_ge_draw_level_body ends and part next begins (1 range scan, 2 classify
+and cut, 3 angle_sort, 4 binds and base/detail draws, 5 glow, submerged and
+decal passes; 0 none). Out of line, so a mark adds one call to its caller */
+static __attribute__((noinline)) void level_split(unsigned int next)
+{
+	unsigned int now;
+
+	if (!replay_kinds_on || !psp_on_me())
+		return;
+	now = replay_clock(1);
+	if (replay_kinds.level_part)
+		replay_kinds.level_ticks[replay_kinds.level_part - 1] += now - replay_kinds.level_mark;
+	if (next == 1)
+		replay_kinds.level_calls++;
+	replay_kinds.level_part = next;
+	replay_kinds.level_mark = now;
 }
 
 /* mc-1b: the frame's end, on the main CPU: each kind's frame sum into its
@@ -1700,6 +1724,8 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		geinflight: the frame's job lasts a frame while the main CPU ticks,
 		which waits on both audio and the ring's jobs (perception's rays, the
 		poses), so they're served every record */
+		/* mc-4b: closed here, so a level draw's early returns are counted */
+		level_split(0);
 		if (timed && kind_before >= 0)
 			replay_kinds_add(side, kind_before, &replay_timing_mark);
 		if (replay_inflight)
@@ -1912,9 +1938,30 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		}
 	}
+	level_split(0); /* mc-4b: the run's last record */
 	if (timed && kind_before >= 0)
 		replay_kinds_add(side, kind_before, &replay_timing_mark);
 	replay_timing = timing_was;
+}
+
+/* mc-4b: the ME's level draws by part since the last report; the rest is
+their kind less the five */
+static void level_split_report(unsigned int frames, float rate)
+{
+	float part[5], kind, rest;
+	int k;
+
+	if (!replay_kinds.level_calls || rate <= 0.0f)
+		return;
+	kind = (float)replay_kinds.ticks[1][DEFER_DRAW_LEVEL] / rate / frames;
+	rest = kind;
+	for (k = 0; k < 5; k++)
+	{
+		part[k] = (float)replay_kinds.level_ticks[k] / rate / frames;
+		rest -= part[k];
+	}
+	platform_log("GE: mekinds, level draws' parts (the ME), us a frame: range scan %.0f; classify and cut %.0f; angle_sort %.0f; binds and base/detail draws %.0f; glow, submerged and decal passes %.0f; rest %.0f (of level draws %.0f); calls %.1f a frame",
+		part[0], part[1], part[2], part[3], part[4], rest, kind, (float)replay_kinds.level_calls / frames);
 }
 
 /* mekinds: the frames since the last report by kind, the largest first, each
@@ -1982,6 +2029,7 @@ static void replay_kinds_report(unsigned int frames)
 		}
 		platform_log("%s", line);
 	}
+	level_split_report(frames, psp_me_cycles_per_us());
 	memset(&replay_kinds, 0, sizeof(replay_kinds));
 }
 
@@ -11246,6 +11294,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			vertex_count = stream->count;
 		}
 	}
+	level_split(1); /* mc-4b: range scan */
 	for (index = 0; index < triangle_count * 3; index++)
 	{
 		unsigned int vertex = indices[index];
@@ -11255,6 +11304,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		if (vertex > highest)
 			highest = vertex;
 	}
+	level_split(2); /* mc-4b: classify and cut */
 	if (highest >= (unsigned int)vertex_count)
 		return;
 	part_add(0);
@@ -11448,10 +11498,12 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		show2_index_copies++;
 		show2_index_bytes += kept_count * 3 * sizeof(unsigned short);
 	}
+	level_split(3); /* mc-4b: angle_sort */
 	{
 		unsigned int angle_start = ge_clock();
 
 		draw = angle_sort(stream->base, draw, kept_count, far_possible, lowest, highest);
+		level_split(0); /* mc-4b: from here to the passes is the rest */
 		angle_us += ge_clock() - angle_start;
 		/* build 89: the pieces cut at the eye are near by definition: with
 		every kept triangle past the detail fade, the detail passes were
@@ -11555,6 +11607,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				sdump_map_name(base_key), alpha_tested, base_alpha, triangle_count);
 	}
 #endif
+	level_split(4); /* mc-4b: binds and base/detail draws (an untextured draw stays here to its end) */
 	if (textured)
 	{
 		int base_width = 0, base_height = 0;
@@ -11731,6 +11784,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			sceGuDepthFunc(GU_GEQUAL);
 		}
 		level_detail_us += probe_clock() - probe_mark;
+		level_split(5); /* mc-4b: glow, submerged and decal passes */
 		level_glow_pass(stream, draw, kept_count, &pieces_store, cut_count, base_slope, 1);
 		sceGuDisable(GU_TEXTURE_2D);
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
