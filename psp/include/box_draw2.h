@@ -42,6 +42,13 @@ its walk, draw2_far gave 0), with the words its sub-list would hold (its
 shown groups' words as draw2_far writes them, and the RET). Returns 1 */
 enum { DRAW2_RSO_SENT, DRAW2_RSO_CAUGHT, DRAW2_FELL, DRAW2_WHYS };
 int draw2_tally(int why, const void *block, unsigned int mask_low, unsigned int mask_high);
+/* the emit's stamp (the lab's decisions 2026-11-27 22:2x (2) (3)), log
+only: draw2_far's main-CPU time in us by part (the words written, from its
+room count to the write-back; the CALL's record; a refusal's room count),
+with the words written. Each reading of the system clock is ~0.6 us of it,
+so the calls are counted too (a third draw2 line each window) */
+enum { DRAW2_STAMP_WRITE, DRAW2_STAMP_CALL, DRAW2_STAMP_REFUSED, DRAW2_STAMPS };
+void draw2_stamp(int part, unsigned int us, unsigned int words);
 
 static inline unsigned int draw2_float(float f)
 {

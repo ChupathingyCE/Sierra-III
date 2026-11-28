@@ -18176,9 +18176,13 @@ static int draw2_far(const void *block, unsigned int mask_low, unsigned int mask
 	struct draw2_sub sub;
 	float eye[3];
 	int k;
+	unsigned int t0, t1, bytes;
 
 	if (!block || !draw2_nodes || draw2_node_count <= 0)
 		return 0;
+	/* the emit's stamp (the lab's decisions 2026-11-27 22:2x (2) (3)): the
+	main CPU's time in here, the words written and the CALL's record apart */
+	t0 = sceKernelGetSystemTimeLow();
 	/* the room: a shown group's words at most (colour material and material
 	4, its matrices 13 each, the draw 6), and the RET */
 	for (at = block, group = 0; at && group < 64; group++)
@@ -18191,7 +18195,10 @@ static int draw2_far(const void *block, unsigned int mask_low, unsigned int mask
 		at = head[14] ? at + head[14] : NULL;
 	}
 	if (!words || !draw2_open(&sub, words + 1))
+	{
+		draw2_stamp(DRAW2_STAMP_REFUSED, sceKernelGetSystemTimeLow() - t0, 0);
 		return 0;
+	}
 	for (k = 0; k < 3; k++)
 		eye[k] = !level_exact ? draw2_eye[k] :
 			level_local ? level_origin[k] + ge_matrix_float(draw2_eye[k] - level_origin[k]) :
@@ -18281,7 +18288,11 @@ static int draw2_far(const void *block, unsigned int mask_low, unsigned int mask
 		}
 		at = head[14] ? at + head[14] : NULL;
 	}
-	psp_ge_call_far(sub.start, draw2_close(&sub));
+	bytes = draw2_close(&sub);
+	t1 = sceKernelGetSystemTimeLow();
+	draw2_stamp(DRAW2_STAMP_WRITE, t1 - t0, bytes / 4);
+	psp_ge_call_far(sub.start, bytes);
+	draw2_stamp(DRAW2_STAMP_CALL, sceKernelGetSystemTimeLow() - t1, 0);
 	return 1;
 }
 #endif

@@ -105,10 +105,26 @@ int draw2_tally(int why, const void *block, unsigned int mask_low, unsigned int 
 	return 1;
 }
 
+static unsigned long draw2_stamp_us[DRAW2_STAMPS], draw2_stamp_calls[DRAW2_STAMPS], draw2_stamp_words = 0;
+
+void draw2_stamp(int part, unsigned int us, unsigned int words)
+{
+	draw2_stamp_us[part] += us;
+	draw2_stamp_calls[part]++;
+	draw2_stamp_words += words;
+}
+
 void draw2_report(void)
 {
 	if (!draw2_arena)
 		return;
+	platform_log("GE: draw2: the emit on the main CPU in %u frames, us (calls): words written %lu (%lu), %lu words; the CALL's record %lu (%lu); refused %lu (%lu)",
+		draw2_frames, draw2_stamp_us[DRAW2_STAMP_WRITE], draw2_stamp_calls[DRAW2_STAMP_WRITE], draw2_stamp_words,
+		draw2_stamp_us[DRAW2_STAMP_CALL], draw2_stamp_calls[DRAW2_STAMP_CALL],
+		draw2_stamp_us[DRAW2_STAMP_REFUSED], draw2_stamp_calls[DRAW2_STAMP_REFUSED]);
+	memset(draw2_stamp_us, 0, sizeof(draw2_stamp_us));
+	memset(draw2_stamp_calls, 0, sizeof(draw2_stamp_calls));
+	draw2_stamp_words = 0;
 	platform_log("GE: draw2: %lu far sub-lists in %u frames, the most words a frame %u of %d, %lu models drawn the old way for want of room",
 		draw2_subs, draw2_frames, draw2_high, DRAW2_SET_WORDS, draw2_refused);
 	platform_log("GE: draw2: old-way far models (words) in %u frames: rso sent %lu (%lu), rso capturing %lu (%lu), draw2_far 0 %lu (%lu); the most words a frame %u",
