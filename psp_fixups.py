@@ -69017,7 +69017,160 @@ def drawstamp_cut(tree):
             open(path, "w", errors="surrogateescape").write(text)
     print("psp_fixups: drawstamp: %d clock-pair edits (the part's shader state, the level's triangle build, the passes' cursor loop)" % placed)
     return placed
-drawstamp_cut(TREE)
+# its pairs are calls inside two PGO-counted functions (structure_render_build_dynamic_triangles, structure_render_pass),
+# so they cost those functions their counts in every build: only under PSP_DRAWSTAMP=1 (the lab's task sr-3)
+if os.environ.get("PSP_DRAWSTAMP", "") == "1":
+    drawstamp_cut(TREE)
+
+# "surfstay" (the lab's briefs/draw_main.md task sr-3, price:SURFRUN; psp_drawstamp.c's psp_surfstay_frame, a keep
+# word; a log only): a second pass of the level's triangle build, appended after structure_render.c's last function so
+# no function's line or text moves and the counted ones keep their counts. full re-runs the engine's own
+# from_bitvector on preprocess's arguments (:585-589) into the buffer the frame drew from (same values, same
+# addresses); copy is :276-323 again, its two writes (:305, :306-311) kept or replaced by a sum into a sink; scan is the
+# flag-word walk alone (:280/:318/:321). Each returns 0 (skipped) when the frame built no level triangles
+SURFSTAY_TAIL = r"""
+#ifdef HALO_PSP
+/* surfstay (psp_fixups.py's surfstay_cut; psp_drawstamp.c times these): no recipe counts to lose */
+static volatile long psp_surfstay_sink;
+
+static short *psp_surfstay_lock(void)
+{
+	long index = structure_render_globals.environment_triangles_index;
+
+	if (index == NONE || render.environment_surface_count <= 0)
+		return NULL;
+	return rasterizer_dynamic_triangles_lock(index);
+}
+
+/* the engine's build, re-run: :373 lock, :382 from_bitvector, :396 unlock */
+int psp_surfstay_full(void)
+{
+	short *triangles = psp_surfstay_lock();
+
+	if (!triangles)
+		return 0;
+	structure_render_dynamic_triangles_from_bitvector(
+		render.environment_surface_count,
+		render.environment_surface_indices,
+		render.environment_surface_flags,
+		triangles);
+	rasterizer_dynamic_triangles_unlock(structure_render_globals.environment_triangles_index);
+	return render.environment_surface_count;
+}
+
+/* :276-323 again, uncounted; stores=0 makes neither write and sums what they would have written */
+int psp_surfstay_copy(int stores)
+{
+	struct structure_bsp *structure_bsp = global_structure_bsp_get();
+	short surface_count = render.environment_surface_count;
+	long *surface_indices = render.environment_surface_indices;
+	unsigned long *surface_flags = render.environment_surface_flags;
+	short surface_index_index = 0;
+	long surface_index = 0;
+	long sum = 0;
+	short *triangles = psp_surfstay_lock();
+
+	if (!triangles)
+		return 0;
+	if (structure_bsp->surfaces.count > 0)
+	{
+		do
+		{
+			if (*surface_flags)
+			{
+				short bit_index;
+
+				for (bit_index = 0;
+					bit_index < LONG_BITS;
+					bit_index++, surface_index++)
+				{
+					if (surface_index >= structure_bsp->surfaces.count)
+					{
+						break;
+					}
+
+					if (TEST_FLAG(*surface_flags, bit_index))
+					{
+						struct structure_surface *surface = TAG_BLOCK_GET_ELEMENT(
+							&structure_bsp->surfaces,
+							surface_index,
+							struct structure_surface);
+
+						match_assert(
+							"c:\\halo\\SOURCE\\structures\\structure_render.c",
+							421,
+							surface_index_index>=0 && surface_index_index<surface_count);
+
+						if (stores)
+						{
+							*surface_indices++ = surface_index;
+							triangles[surface_index_index * NUMBER_OF_VERTICES_PER_TRIANGLE + 0] =
+								surface->vertex_indices[0];
+							triangles[surface_index_index * NUMBER_OF_VERTICES_PER_TRIANGLE + 1] =
+								surface->vertex_indices[1];
+							triangles[surface_index_index * NUMBER_OF_VERTICES_PER_TRIANGLE + 2] =
+								surface->vertex_indices[2];
+						}
+						else
+						{
+							sum += surface_index + surface->vertex_indices[0]
+								+ surface->vertex_indices[1] + surface->vertex_indices[2];
+						}
+						surface_index_index++;
+					}
+				}
+			}
+			else
+			{
+				surface_index += LONG_BITS;
+			}
+
+			surface_flags++;
+		}
+		while (surface_index < structure_bsp->surfaces.count);
+	}
+	rasterizer_dynamic_triangles_unlock(structure_render_globals.environment_triangles_index);
+	psp_surfstay_sink = sum;
+	return surface_count;
+}
+
+/* the scan that stays: :280's flag-word load and zero test, :318's skip, :321's step */
+int psp_surfstay_scan(void)
+{
+	struct structure_bsp *structure_bsp = global_structure_bsp_get();
+	unsigned long *surface_flags = render.environment_surface_flags;
+	long surface_index = 0;
+	long words = 0;
+
+	if (structure_bsp->surfaces.count > 0)
+	{
+		do
+		{
+			if (*surface_flags)
+			{
+				words++;
+			}
+			surface_index += LONG_BITS;
+			surface_flags++;
+		}
+		while (surface_index < structure_bsp->surfaces.count);
+	}
+	psp_surfstay_sink = words;
+	return 1;
+}
+#endif
+"""
+def surfstay_cut(tree):
+    path = os.path.join(tree, "source/structures/structure_render.c")
+    text = open(path, errors="surrogateescape").read()
+    if not text.endswith("\tprofile_exit(render_structure_shadows_section);\n\n\treturn;\n}\n"):
+        check_fail("psp_fixups: surfstay: structure_render.c doesn't end with render_shadows' close")
+        return 0
+    if not CHECK_ONLY:
+        open(path, "w", errors="surrogateescape").write(text + SURFSTAY_TAIL)
+    print("psp_fixups: surfstay: three functions appended to structure_render.c (full, copy, scan; no line moved)")
+    return 1
+surfstay_cut(TREE)
 
 if CHECK_ONLY:
     for message in count_failures:

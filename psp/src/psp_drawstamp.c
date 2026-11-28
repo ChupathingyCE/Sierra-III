@@ -71,3 +71,78 @@ void psp_drawstamp_frame(void)
 	frames = 0;
 	clear();
 }
+
+/* "surfstay" (keep word; the lab's task sr-3, price:SURFRUN): what of the
+level's triangle build stays if its writes go. Once a frame, after it is drawn,
+four items each in one clock pair, each started cold by a whole-cache
+writeback-invalidate outside its pair, in an order rotating by frame:
+  full  the engine's build again (structure_render.c's tail, psp_surfstay_full:
+        lock, from_bitvector as preprocess calls it, unlock; counted code)
+  copy+stores / copy-stores  the same loop uncounted, with its two writes or
+        with a sum in their place: the difference is the stores alone
+  scan  the flag-word walk alone, which stays
+The line, every 300 frames, a ran frame's mean:
+  surfstay: full F copy+stores A copy-stores B scan S us a frame, surfaces N,
+  skipped K
+A frame whose build made no triangles is skipped whole and counted. Off, one
+test a frame. */
+int psp_surfstay_full(void);
+int psp_surfstay_copy(int stores);
+int psp_surfstay_scan(void);
+unsigned int sceKernelGetSystemTimeLow(void);
+void sceKernelDcacheWritebackInvalidateAll(void);
+
+void psp_surfstay_frame(void)
+{
+	static int word = -1;
+	static unsigned int frames, ran, skipped, rotate;
+	static unsigned int us[4], surfaces;
+	unsigned int t[4], stamp;
+	int n[4] = { 0, 0, 0, 0 }, k, item;
+
+	if (word < 0)
+	{
+		word = psp_keep("surfstay");
+		if (word)
+			platform_log("surfstay: on (the level's triangle build again: full, copy with and without its stores, scan; a line each %d frames)",
+				WINDOW);
+		return;
+	}
+	if (!word)
+		return;
+	for (k = 0; k < 4; k++)
+	{
+		item = (rotate + k) & 3;
+		sceKernelDcacheWritebackInvalidateAll();
+		stamp = sceKernelGetSystemTimeLow();
+		switch (item)
+		{
+		case 0: n[0] = psp_surfstay_full(); break;
+		case 1: n[1] = psp_surfstay_copy(1); break;
+		case 2: n[2] = psp_surfstay_copy(0); break;
+		default: n[3] = psp_surfstay_scan(); break;
+		}
+		t[item] = sceKernelGetSystemTimeLow() - stamp;
+	}
+	rotate++;
+	if (n[0] && n[1] && n[2])
+	{
+		for (k = 0; k < 4; k++)
+			us[k] += t[k];
+		surfaces += n[0];
+		ran++;
+	}
+	else
+		skipped++;
+	if (++frames < WINDOW)
+		return;
+	{
+		float r = ran ? (float)ran : 1.0f;
+
+		platform_log("surfstay: full %.1f copy+stores %.1f copy-stores %.1f scan %.1f us a frame, surfaces %.1f, skipped %u",
+			us[0] / r, us[1] / r, us[2] / r, us[3] / r, surfaces / r, skipped);
+	}
+	frames = ran = skipped = surfaces = 0;
+	for (k = 0; k < 4; k++)
+		us[k] = 0;
+}

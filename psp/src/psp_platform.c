@@ -4017,6 +4017,14 @@ void psp_frame_account(unsigned long microseconds)
 
 		psp_drawstamp_frame();
 	}
+	{
+		/* "surfstay" (psp_drawstamp.c): the level's triangle build again,
+		timed, after the frame is drawn and before the next begin resets the
+		dynamic triangles; off, one test */
+		extern void psp_surfstay_frame(void);
+
+		psp_surfstay_frame();
+	}
 	/* build 102: another thread crashed: the report stays on the screen */
 	psp_crash_stop_if_crashed();
 	if (log_frame_flush)
