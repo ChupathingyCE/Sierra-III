@@ -1854,8 +1854,14 @@ struct tick_look_stats
 	unsigned int batch_first;   /* batch jobs whose records a pick-up made first */
 	unsigned int audio_inside;  /* audio blocks mixed at the replay's looks */
 	unsigned int audio_held;    /* of them, audiohold's: blocks that had waited past its due time */
-	unsigned int pad[7];
+	/* price:LOOKTHIN, log only */
+	unsigned int idle_cycles;     /* of served_cycles: looks that picked nothing up, whole */
+	unsigned int idle_looks;      /* those looks (nothing waiting, or held to the slice) */
+	unsigned int plain_looks;     /* looks with ticksched off (a yield), in neither */
+	unsigned int features_cycles; /* every ticksched look: its start to after its third features read (the audio check, and a mix where one ran) */
+	unsigned int pad[3];
 } __attribute__((aligned(64)));
+_Static_assert(sizeof(struct tick_look_stats) == 64, "tick_look: one line pair");
 static struct tick_look_stats tick_look PSP_AIME_ME_SIDE = { 0 };
 /* the ME's own: the clock at its last pick-up and the records since */
 static PSP_AIME_ME_SIDE unsigned int tick_pick_mark = 0, tick_records_since = 0;
@@ -1897,7 +1903,7 @@ static void ring_batch_first(unsigned int popped, unsigned int pushed)
 void psp_me_replay_look(void)
 {
 	volatile struct me_private *p;
-	unsigned int began, now, pushed, slice, cap;
+	unsigned int began, now, pushed, slice, cap, spent;
 	int urgent;
 
 	if (!psp_on_me())
@@ -1908,6 +1914,7 @@ void psp_me_replay_look(void)
 	{
 		psp_me_yield();
 		tick_look.served_cycles += me_cycles() - began;
+		tick_look.plain_looks++;
 		return;
 	}
 	/* audio keeps its every-record look: its deadline is its own. Under
@@ -1920,11 +1927,15 @@ void psp_me_replay_look(void)
 		tick_look.audio_held++;
 	}
 	p = ME_PRIVATE;
+	tick_look.features_cycles += me_cycles() - began;
 	pushed = RING_PUSHED;
 	tick_records_since++;
 	if (!p->ring_ready || p->in_ring || pushed == p->ring_popped)
 	{
-		tick_look.served_cycles += me_cycles() - began;
+		spent = me_cycles() - began;
+		tick_look.served_cycles += spent;
+		tick_look.idle_cycles += spent;
+		tick_look.idle_looks++;
 		return;
 	}
 	now = me_cycles();
@@ -1934,7 +1945,10 @@ void psp_me_replay_look(void)
 	if (!urgent && now - tick_pick_mark < (slice & 0x00FFFFFFu) && !(cap && tick_records_since >= cap))
 	{
 		tick_look.held++;
-		tick_look.served_cycles += me_cycles() - began;
+		spent = me_cycles() - began;
+		tick_look.served_cycles += spent;
+		tick_look.idle_cycles += spent;
+		tick_look.idle_looks++;
 		return;
 	}
 	tick_look.urgent += urgent && now - tick_pick_mark < (slice & 0x00FFFFFFu) ? 1u : 0u;
@@ -5997,6 +6011,14 @@ void psp_me_report(void)
 		d.batch_first = t->batch_first - seen.batch_first;
 		d.audio_inside = t->audio_inside - seen.audio_inside;
 		d.audio_held = t->audio_held - seen.audio_held;
+		d.idle_cycles = t->idle_cycles - seen.idle_cycles;
+		d.idle_looks = t->idle_looks - seen.idle_looks;
+		d.plain_looks = t->plain_looks - seen.plain_looks;
+		d.features_cycles = t->features_cycles - seen.features_cycles;
+		seen.idle_cycles += d.idle_cycles;
+		seen.idle_looks += d.idle_looks;
+		seen.plain_looks += d.plain_looks;
+		seen.features_cycles += d.features_cycles;
 		seen.audio_inside += d.audio_inside;
 		seen.audio_held += d.audio_held;
 		seen.served_cycles += d.served_cycles;
@@ -6006,11 +6028,13 @@ void psp_me_report(void)
 		seen.held += d.held;
 		seen.urgent += d.urgent;
 		seen.batch_first += d.batch_first;
-		platform_log("ME: replay looks: %lu jobs, the job %lu us, its own %lu us (served inside it %lu us: audio and the ring); %u looks, %u pick-ups running %u ring jobs, %u held to the slice, %u early for a wait, %u batch jobs made first; audio mixed at its looks %u (audiohold's near-dry %u)%s",
+		platform_log("ME: replay looks: %lu jobs, the job %lu us, its own %lu us (served inside it %lu us: audio and the ring); %u looks, %u pick-ups running %u ring jobs, %u held to the slice, %u early for a wait, %u batch jobs made first; audio mixed at its looks %u (audiohold's near-dry %u)%s; idle looks %u (%lu us a job), of it features+audio reads %lu us; plain looks %u",
 			jobs, (unsigned long)((float)job_cycles / rate / (float)jobs),
 			(unsigned long)((float)(job_cycles > d.served_cycles ? job_cycles - d.served_cycles : 0) / rate / (float)jobs),
 			(unsigned long)((float)d.served_cycles / rate / (float)jobs), d.looks, d.pickups, d.ring_jobs, d.held, d.urgent,
-			d.batch_first, d.audio_inside, d.audio_held, (CONTROL->features & ME_FEATURE_TICKSCHED) ? " (ticksched)" : "");
+			d.batch_first, d.audio_inside, d.audio_held, (CONTROL->features & ME_FEATURE_TICKSCHED) ? " (ticksched)" : "",
+			d.idle_looks, (unsigned long)((float)d.idle_cycles / rate / (float)jobs),
+			(unsigned long)((float)d.features_cycles / rate / (float)jobs), d.plain_looks);
 	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
 	if (me_halting && length < (int)sizeof(line) - 160)
