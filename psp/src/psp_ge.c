@@ -10750,6 +10750,92 @@ static __attribute__((noinline)) void d2b_loop(const struct ge_vertex *stream, c
 		d2b_counts.held += (unsigned long)count - filled;
 	}
 }
+
+/* D2B's price stamps (the lab's decisions 2026-11-27 23:5x (2)): under
+"timerson" only, angle_sort takes this copy of d2b_loop in its place (a test
+a draw), so d2b_loop's own code is unchanged. Each part timed on its side's
+clock (the ME's cycle counter; ge_clock reads 0 there): the fill path's
+lookup and store (its bucket work apart), the held path's lookup, d2b_check
+(the test and its clears), and the tail both paths share with today's loop.
+The clock's own read is timed once a draw (two reads back to back), so the
+reader can take it off each part. High water: the table's (d2b_state.high,
+bytes) and the kept list's (ids), over the window and the run. Written by the
+holding side on its own line, read and zeroed as d2b_counts */
+static struct
+{
+	unsigned long long fill_extra, fill_work, held, check, tail, whole, read;
+	unsigned int draws, reads, check_worst, on_me;
+	unsigned int high, kept, run_high, run_kept;
+} d2b_stamps __attribute__((aligned(64)));
+
+static __attribute__((noinline)) void d2b_loop_timed(const struct ge_vertex *stream, const unsigned short *indices,
+	const unsigned short *ids, long count, int far_possible, long *total)
+{
+	float ex = level_eye[0], ey = level_eye[1], ez = level_eye[2];
+	unsigned int far_known = far_possible ? D2B_FAR_KNOWN : 0u, high, filled = 0;
+	int side = psp_on_me();
+	unsigned int start = replay_clock(side), now, fill_extra = 0, fill_work = 0, held_time = 0, tail = 0, spent;
+	long t;
+
+	now = replay_clock(side);
+	d2b_stamps.read += now - start; /* one read, back to back */
+	d2b_check(far_possible);
+	start = replay_clock(side);
+	spent = start - now;
+	d2b_stamps.check += spent;
+	if (spent > d2b_stamps.check_worst)
+		d2b_stamps.check_worst = spent;
+	now = start;
+	high = d2b_state.high;
+	for (t = 0; t < count; t++)
+	{
+		unsigned int id = ids[t], held = d2b_held[id], mark;
+		int bucket;
+
+		if (held == D2B_UNFILLED || (far_possible && !(held & D2B_FAR_KNOWN)))
+		{
+			unsigned int looked = replay_clock(side), worked;
+
+			bucket = angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, detail_far_squared);
+			worked = replay_clock(side);
+			d2b_held[id] = (unsigned char)((unsigned int)bucket | far_known);
+			if (id >= high)
+				high = id + 1;
+			filled++;
+			mark = replay_clock(side);
+			fill_extra += (looked - now) + (mark - worked);
+			fill_work += worked - looked;
+		}
+		else
+		{
+			bucket = (int)(held & ~D2B_FAR_KNOWN);
+			if (!far_possible && bucket >= ANGLE_BUCKETS)
+				bucket -= ANGLE_BUCKETS;
+			mark = replay_clock(side);
+			held_time += mark - now;
+		}
+		angle_bucket_of[t] = (unsigned char)bucket;
+		total[bucket]++;
+		now = replay_clock(side);
+		tail += now - mark;
+	}
+	d2b_state.high = high;
+	d2b_counts.draws++;
+	d2b_counts.filled += filled;
+	d2b_counts.held += (unsigned long)count - filled;
+	d2b_stamps.fill_extra += fill_extra;
+	d2b_stamps.fill_work += fill_work;
+	d2b_stamps.held += held_time;
+	d2b_stamps.tail += tail;
+	d2b_stamps.draws++;
+	d2b_stamps.reads += 1;
+	d2b_stamps.on_me = (unsigned int)side;
+	if (high > d2b_stamps.high)
+		d2b_stamps.high = high;
+	if (ids == d2b_kept_ids && (unsigned int)count > d2b_stamps.kept)
+		d2b_stamps.kept = (unsigned int)count;
+	d2b_stamps.whole += replay_clock(side) - (start - spent);
+}
 #define D2B_SORT_PARAM , const unsigned short *ids
 
 /* the counters' line, each 300 frames (§4.3d item 3), from frame_end_show:
@@ -10766,6 +10852,36 @@ static __attribute__((noinline)) void d2b_report(void)
 		d2b_counts.draws / 300, d2b_counts.held / 300, d2b_counts.filled / 300,
 		seen ? d2b_counts.held * 100 / seen : 0, d2b_counts.clears);
 	memset(&d2b_counts, 0, sizeof(d2b_counts));
+	if (d2b_stamps.draws)
+	{
+		extern float psp_me_cycles_per_us(void);
+		float rate = d2b_stamps.on_me ? psp_me_cycles_per_us() : 1.0f, per;
+
+		if (d2b_stamps.high > d2b_stamps.run_high)
+			d2b_stamps.run_high = d2b_stamps.high;
+		if (d2b_stamps.kept > d2b_stamps.run_kept)
+			d2b_stamps.run_kept = d2b_stamps.kept;
+		if (rate <= 0.0f)
+			platform_log("GE: d2bstamp: the ME's times can't be given (its clock wasn't measured at start)");
+		else
+		{
+			per = 1000.0f * rate * 300.0f; /* counts in a ms a frame */
+			platform_log("GE: d2bstamp, %s, ms a frame over 300 frames: fill lookup+store %.3f (its bucket work %.3f), held lookup %.3f, check and clears %.3f (worst draw %.0f us), shared tail %.3f, loop whole %.3f; one clock read %.1f counts, %u draws",
+				d2b_stamps.on_me ? "the ME" : "the main CPU", (float)d2b_stamps.fill_extra / per,
+				(float)d2b_stamps.fill_work / per, (float)d2b_stamps.held / per, (float)d2b_stamps.check / per,
+				(float)d2b_stamps.check_worst / rate, (float)d2b_stamps.tail / per, (float)d2b_stamps.whole / per,
+				d2b_stamps.reads ? (float)d2b_stamps.read / d2b_stamps.reads : 0.0f, d2b_stamps.draws);
+		}
+		platform_log("GE: d2bstamp: high water, table %u bytes (run %u), kept list %u ids, %u bytes (run %u ids)",
+			d2b_stamps.high, d2b_stamps.run_high, d2b_stamps.kept, d2b_stamps.kept * 2u, d2b_stamps.run_kept);
+		{
+			unsigned int run_high = d2b_stamps.run_high, run_kept = d2b_stamps.run_kept;
+
+			memset(&d2b_stamps, 0, sizeof(d2b_stamps));
+			d2b_stamps.run_high = run_high;
+			d2b_stamps.run_kept = run_kept;
+		}
+	}
 }
 #else
 #define D2B_SORT_PARAM
@@ -10802,7 +10918,10 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 	{
 		unsigned int loop_start = ge_clock();
 
-		d2b_loop(stream, indices, ids, count, far_possible, total);
+		if (psp_timers_off)
+			d2b_loop(stream, indices, ids, count, far_possible, total);
+		else
+			d2b_loop_timed(stream, indices, ids, count, far_possible, total); /* D2B's price stamps */
 		angle_loop_us += ge_clock() - loop_start;
 	}
 	else
