@@ -69136,6 +69136,88 @@ def s1count_pose_cut(tree):
     return 1
 s1count_pose_cut(TREE)
 
+# S1COUNT class (d), second half (the lab's briefs/s1_count.md, task s1c-d2; the first half is store_coll.c's met and
+# features): in collision_get_features_in_sphere's object walk, as SWEEPREUSE left it, each object met in a walked
+# cluster (SWEEPREUSE's met site) is clocked with psp_kt_clock to its test's outcome: one that passes (into the body
+# that gathers its features) adds PSP_S1_D_PASSED 1, one that doesn't adds its clock to PSP_S1_D_UNPASSED; stage G,
+# tagged by the gather's ignored object (the biped). Only on s1count's timed ticks, off the ME, while psp_sr_on_pill
+# (the biped's sweep). Hooks are expressions on lines already there, the helpers at the file's end: no line moves.
+# Count only: psp_sr_near_count isn't read (-1 past 8)
+S1COUNT_COLL_CUTS = (
+    ("the declarations",
+     "boolean collision_get_features_in_sphere(\n",
+     "static unsigned long psp_s1d_mark; static unsigned long psp_s1d_met(void); static void psp_s1d_passed(long biped_index); "
+     "static void psp_s1d_unpassed(long biped_index); /* (s1count) */ boolean collision_get_features_in_sphere(\n"),
+    ("the met site",
+     "\t\t\t\t\t\tif (psp_sr_on_pill) psp_sr_met++; /* PSP_SWEEPREUSE: an object in a walked cluster */\n",
+     "\t\t\t\t\t\tif (psp_sr_on_pill) psp_sr_met++; /* PSP_SWEEPREUSE: an object in a walked cluster */ "
+     "psp_s1d_mark = psp_s1_on && psp_sr_on_pill ? psp_s1d_met() : 0; /* (s1count) */\n"),
+    ("the pass",
+     "\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE: an object in reach past the gather's filter is a near one */\n",
+     "\t\t\t\t\t\t\t{ /* PSP_SWEEPREUSE: an object in reach past the gather's filter is a near one */ "
+     "if (psp_s1d_mark) psp_s1d_passed(ignore_object_index); /* (s1count) */\n"),
+    ("the fail",
+     "\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n",
+     "\t\t\t\t\t\t\t\tignore_object_index,\n\t\t\t\t\t\t\t\tfeatures);\n\t\t\t\t\t\t\t}\n"
+     "\t\t\t\t\t\t} else if (psp_s1d_mark) psp_s1d_unpassed(ignore_object_index); /* (s1count) */\n\t\t\t\t\t}\n"),
+)
+S1COUNT_COLL_TAIL = r"""
+/* psp_fixups.py (S1COUNT class (d), second half, the lab's briefs/s1_count.md s1c-d2): the gather's objects met in a
+walked cluster, clocked from the met site to the test's outcome, log only (psp_ktstamp.c's s1count line) */
+static unsigned long psp_s1d_met(void)
+{
+	return psp_work_on_me() ? 0 : psp_kt_clock() | 1;
+}
+
+static void psp_s1d_tag(long biped_index)
+{
+	if (biped_index != NONE)
+		psp_s1_tag(PSP_S1_WHO(object_get(biped_index)));
+}
+
+/* passed: a count */
+static void psp_s1d_passed(long biped_index)
+{
+	psp_s1d_mark = 0;
+	psp_s1d_tag(biped_index);
+	psp_s1_add(PSP_S1_D_PASSED, PSP_S1_STAGE_G, 1);
+}
+
+/* not passed: its clock from the met site */
+static void psp_s1d_unpassed(long biped_index)
+{
+	unsigned long us = psp_kt_clock() - psp_s1d_mark;
+
+	psp_s1d_mark = 0;
+	psp_s1d_tag(biped_index);
+	psp_s1_add(PSP_S1_D_UNPASSED, PSP_S1_STAGE_G, us);
+}
+"""
+def s1count_coll_cut(tree):
+    if not S1COUNT or not KTSTAMP:
+        return 0
+    if not SWEEPREUSE:
+        check_fail("psp_fixups: S1COUNT coll: needs PSP_SWEEPREUSE (its met site and psp_sr_on_pill)")
+        return 0
+    cp = os.path.join(tree, "source/physics/collisions.c")
+    c = open(cp, errors="surrogateescape").read()
+    lines = c.count("\n")
+    for what, old, new in S1COUNT_COLL_CUTS:
+        if c.count(old) != 1:
+            check_fail("psp_fixups: S1COUNT coll: %s's anchor %r matches %d times" % (what, old[:60], c.count(old)))
+            return 0
+        c = c.replace(old, new)
+    if c.count("\n") != lines:
+        check_fail("psp_fixups: S1COUNT coll: a hook moved collisions.c's lines")
+        return 0
+    c += S1COUNT_COLL_TAIL
+    if not CHECK_ONLY:
+        open(cp, "w", errors="surrogateescape").write(c)
+    print("psp_fixups: S1COUNT coll: class (d)'s passed and unpassed objects in collisions.c's sphere gather (%d hooks)"
+          % len(S1COUNT_COLL_CUTS))
+    return 1
+s1count_coll_cut(TREE)
+
 if CHECK_ONLY:
     for message in count_failures:
         print(message)
